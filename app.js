@@ -662,11 +662,15 @@ function computeGuideLinesJS(view, pts, ctx, vw, vh) {
   const ball = detectBallBlob(ctx, shaftEnd, searchR, rHint, vw, vh) || shaftEnd;
 
   const lines = [];
-  // 1. シャフトの線(ボール→手元、体の少し後ろまで)
-  const d1 = dist(ball, wrMid) + 1e-6;
-  const u1 = [(wrMid[0] - ball[0]) / d1, (wrMid[1] - ball[1]) / d1];
-  const shaftLen = d1 * 1.5;
-  lines.push([ball[0], ball[1], ball[0] + u1[0] * shaftLen, ball[1] + u1[1] * shaftLen]);
+  // 1. シャフトの線。ボールはクラブヘッドの先にあるため、起点を
+  //    ボールから少し手前(クラブヘッド位置)にずらして実際の
+  //    シャフトの角度に合わせる。長さも体の少し後ろまでに抑える
+  const anchor = [ball[0] - dx * rHint * 3.2, ball[1]];
+  const d1 = dist(anchor, wrMid) + 1e-6;
+  const u1 = [(wrMid[0] - anchor[0]) / d1, (wrMid[1] - anchor[1]) / d1];
+  const shaftLen = d1 * 1.3;
+  lines.push([anchor[0], anchor[1],
+              anchor[0] + u1[0] * shaftLen, anchor[1] + u1[1] * shaftLen]);
   // 2. ボール〜首の付け根(頭寄り)の線
   const target = [shMid[0] + (earMid[0] - shMid[0]) * 0.6,
                   shMid[1] + (earMid[1] - shMid[1]) * 0.6];
