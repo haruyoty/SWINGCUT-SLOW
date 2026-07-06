@@ -652,11 +652,13 @@ function computeGuideLinesJS(view, pts, ctx, vw, vh) {
     const bot = groundY + 0.06 * personH;
     return [[nose[0], top, nose[0], bot]];
   }
-  // 後方ビュー
-  const dx = nose[0] >= earMid[0] ? 1 : -1;
-  let shaftEnd = [wrMid[0] + dx * 0.58 * (groundY - wrMid[1]), groundY];
+  // 後方ビュー。ボールがどちら側かは「手首が腰より前(ボール側)に
+  // 出ている」ことで判定する。真後ろからの撮影では顔が見えず、
+  // 鼻と耳の位置関係では誤判定するため
+  const dx = wrMid[0] >= hipMid[0] ? 1 : -1;
+  let shaftEnd = [wrMid[0] + dx * 0.75 * (groundY - wrMid[1]), groundY];
   const rHint = Math.max(3, personH * 0.016);
-  const searchR = Math.max(60, personH * 0.15);
+  const searchR = Math.max(80, personH * 0.25);
   const ball = detectBallBlob(ctx, shaftEnd, searchR, rHint, vw, vh) || shaftEnd;
 
   const lines = [];
@@ -672,9 +674,14 @@ function computeGuideLinesJS(view, pts, ctx, vw, vh) {
   const u2 = [(target[0] - ball[0]) / d2, (target[1] - ball[1]) / d2];
   const neckLen = d2 * 1.15;
   lines.push([ball[0], ball[1], ball[0] + u2[0] * neckLen, ball[1] + u2[1] * neckLen]);
-  // 3. 頭の後ろ〜お尻の少し下の線
-  const headBack = [earMid[0] + (earMid[0] - nose[0]) * 0.8,
-                    earMid[1] + (earMid[1] - nose[1]) * 0.8];
+  // 3. 頭の後ろ〜お尻の少し下の線。「頭の後ろ」はボールと反対方向。
+  // 顔が見えない真後ろ撮影では鼻の位置が当てにならないため、
+  // 耳と鼻の関係がボール方向と矛盾する場合は固定オフセットを使う
+  let headBack = [earMid[0] + (earMid[0] - nose[0]) * 0.8,
+                  earMid[1] + (earMid[1] - nose[1]) * 0.8];
+  if ((earMid[0] - nose[0]) * dx >= 0) {
+    headBack = [earMid[0] - dx * 0.55 * headH, earMid[1] - 0.15 * headH];
+  }
   const hipBack = [hipMid[0] - dx * 0.30 * torso, hipMid[1]];
   const ext = (a, b, k) => [b[0] + (b[0] - a[0]) * k, b[1] + (b[1] - a[1]) * k];
   const p3a = ext(hipBack, headBack, 0.15);
