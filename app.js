@@ -7,6 +7,7 @@ const video = $('video');
 const overlayCanvas = $('overlayCanvas');
 
 let items = [];
+window.DEBUG_ITEMS = items; // 開発検証用
 let cur = -1;
 let previewPhase = 0; // 0=off, 1=通常, 2=スロー
 let analyzing = false;
@@ -48,23 +49,35 @@ function seekFrame(v, t) {
   return new Promise(res => {
     let done = false;
     const finish = () => { if (!done) { done = true; res(); } };
-    if ('requestVideoFrameCallback' in HTMLVideoElement.prototype) {
-      v.requestVideoFrameCallback(() => finish());
-      const onSeeked = () => {
-        v.removeEventListener('seeked', onSeeked);
-        setTimeout(finish, 250); // rVFCが発火しない環境への保険
-      };
-      v.addEventListener('seeked', onSeeked);
-      v.currentTime = t;
-    } else {
-      const onSeeked = () => {
-        v.removeEventListener('seeked', onSeeked);
-        setTimeout(finish, 80);
-      };
-      v.addEventListener('seeked', onSeeked);
-      v.currentTime = t;
-    }
+    const onSeeked = () => {
+      v.removeEventListener('seeked', onSeeked);
+      // seeked後に新フレームの描画完了を待つ。先に仕込むと直前の
+      // フレーム表示イベントを拾って古いフレームを解析してしまう
+      if ('requestVideoFrameCallback' in HTMLVideoElement.prototype) {
+        v.requestVideoFrameCallback(() => finish());
+        setTimeout(finish, 120); // rVFCが発火しない環境への保険
+      } else {
+        setTimeout(finish, 60);
+      }
+    };
+    v.addEventListener('seeked', onSeeked);
+    v.currentTime = t;
   });
+}
+// 解析用の非表示video。DOM上にないとフレーム描画イベントが
+// 発火しないブラウザがあるため、画面外に置いて使う
+function hiddenVideo(url) {
+  const v = document.createElement('video');
+  v.muted = true; v.playsInline = true; v.preload = 'auto';
+  v.style.cssText = 'position:fixed;left:-9999px;top:0;width:2px;height:2px;opacity:0;pointer-events:none';
+  v.src = url;
+  document.body.appendChild(v);
+  return v;
+}
+function disposeVideo(v) {
+  v.removeAttribute('src');
+  v.load();
+  v.remove();
 }
 function waitMeta(v) {
   return new Promise((res, rej) => {
@@ -193,9 +206,7 @@ async function analyzeItem(it) {
   renderQueue();
   setStatus('<span class="spinner"></span>スイングを解析しています… (' + it.file.name + ')');
   try {
-    const v = document.createElement('video');
-    v.muted = true; v.playsInline = true; v.preload = 'auto';
-    v.src = it.url;
+    const v = hiddenVideo(it.url);
     await waitMeta(v);
     it.dur = v.duration;
     it.vw = v.videoWidth; it.vh = v.videoHeight;
@@ -237,7 +248,7 @@ async function analyzeItem(it) {
         renderQueue();
       }
     }
-    v.removeAttribute('src'); v.load();
+    disposeVideo(v);
     it.cellDiffs = cellDiffs;
     it.fpsA = 1 / step;
 
@@ -360,24 +371,47 @@ function detectSwing(diffs, fps, impacts, total) {
     if (cands.every(j => Math.abs(i - j) > fps * 0.7)) cands.push(i);
     if (cands.length >= 12) break;
   }
-  let scored = [];
+  let scored = [];   // 直前の静止(アドレス)が確認できた通常候補
+  const fbScored = []; // 冒頭すぎて静止を確認できない候補(短い動画のみ評価)
+  const smSorted = [...sm].sort((a, b) => a - b);
+  const smMed = smSorted[Math.floor(smSorted.length / 2)];
+  const smQuiet = smSorted[Math.floor(smSorted.length * 0.25)];
   for (const i of cands) {
     const q = preQuiet(i);
-    if (q == null) continue;
+    if (q == null) {
+      // スマホの短いクリップは撮影開始直後にスイングが始まることが
+      // 多いため、冒頭候補も残しておく(静かな時間帯との比で採点)
+      if (total < 10) {
+        let s = (sm[i] / (smQuiet + 1e-6)) * 2.0;
+        if (impacts.some(t => Math.abs(i / fps - t) < 0.5)) s *= 4.0;
+        fbScored.push({ score: s, i, q: smQuiet, ql: 0 });
+      }
+      continue;
+    }
     const ql = quietLen(i, q);
     let score = (sm[i] / (q + 1e-6)) * (0.5 + Math.min(ql, 4.0));
     if (impacts.some(t => Math.abs(i / fps - t) < 0.5)) score *= 4.0;
     scored.push({ score, i, q, ql });
   }
-  if (!scored.length) {
+  if (!scored.length && !fbScored.length) {
     const i = cands.reduce((a, b) => sm[a] >= sm[b] ? a : b);
-    scored = [{ score: 1, i, q: median(Array.from(sm)), ql: 99 }];
+    scored = [{ score: 1, i, q: smMed, ql: 99 }];
   }
-  const best = Math.max(...scored.map(s => s.score));
-  const top = scored.filter(s => s.score >= best * 0.65 && s.ql >= 2.0);
-  const primary = top.length ? top.reduce((a, b) => a.i <= b.i ? a : b)
-    : scored.reduce((a, b) => a.score >= b.score ? a : b);
-  const rest = scored.filter(s => s.i !== primary.i).sort((a, b) => b.score - a.score);
+  const regBest = scored.length ? Math.max(...scored.map(s => s.score)) : 0;
+  const fbBest = fbScored.length ? Math.max(...fbScored.map(s => s.score)) : 0;
+  let primary, rest;
+  if (fbBest > regBest) {
+    // 冒頭のスイングが明確に最有力(動画がスイング直前から始まるケース)
+    primary = fbScored.reduce((a, b) => a.score >= b.score ? a : b);
+    rest = [...scored, ...fbScored.filter(s => s !== primary)]
+      .sort((a, b) => b.score - a.score);
+  } else {
+    const top = scored.filter(s => s.score >= regBest * 0.65 && s.ql >= 2.0);
+    primary = top.length ? top.reduce((a, b) => a.i <= b.i ? a : b)
+      : scored.reduce((a, b) => a.score >= b.score ? a : b);
+    rest = [...scored.filter(s => s.i !== primary.i), ...fbScored]
+      .sort((a, b) => b.score - a.score);
+  }
   const results = [];
   for (const s of [primary, ...rest]) {
     const r = expand(s.i, s.q);
@@ -493,9 +527,7 @@ async function getPose() {
 // 1フレームだけだとボケ・ブレ・シーク不良で線がズレることがあるため
 async function poseBest(it, times) {
   const lmk = await getPose();
-  const v = document.createElement('video');
-  v.muted = true; v.playsInline = true; v.preload = 'auto';
-  v.src = it.url;
+  const v = hiddenVideo(it.url);
   await waitMeta(v);
   const cvs = document.createElement('canvas');
   cvs.width = it.vw; cvs.height = it.vh;
@@ -523,7 +555,7 @@ async function poseBest(it, times) {
     ctx.drawImage(v, 0, 0, it.vw, it.vh);
     ballCtx = ctx;
   }
-  v.removeAttribute('src'); v.load();
+  disposeVideo(v);
   if (!best) return { pts: null, ctx: null, view: null };
   // 正面/後方は多数決で決める
   const backVotes = views.filter(x => x === 'back').length;
@@ -660,8 +692,23 @@ async function ensureLines(it) {
   const key = `${it.start.toFixed(2)}|${it.view}`;
   if (it.linesKey === key) return;
   try {
-    const { pts, ctx, view } = await poseBest(it,
-      [it.start + 0.2, it.start + 0.5, it.start + 0.8]);
+    // 区間前半の「最も静止しているフレーム」=アドレスに最も近い瞬間を
+    // 姿勢推定に使う(検出区間が多少ズレていても線の位置が狂いにくい)
+    let times = [it.start + 0.2, it.start + 0.5, it.start + 0.8];
+    if (it.cellDiffs && it.cellDiffs.length) {
+      const fps = it.fpsA;
+      const i0 = Math.max(0, Math.floor(it.start * fps));
+      const i1 = Math.min(it.cellDiffs.length - 1,
+        Math.floor(Math.min(it.start + 2.5, it.end) * fps));
+      const calm = [];
+      for (let i = i0; i <= i1; i++) {
+        const s = [...it.cellDiffs[i]].sort((a, b) => b - a);
+        calm.push([(s[0] + s[1] + s[2]) / 3, i / fps]);
+      }
+      calm.sort((a, b) => a[0] - b[0]);
+      if (calm.length >= 3) times = calm.slice(0, 3).map(x => x[1]);
+    }
+    const { pts, ctx, view } = await poseBest(it, times);
     if (!pts) { it.lines = null; it.linesKey = key; it.viewUsed = '人物検出できず'; return; }
     const used = (it.view === 'front' || it.view === 'back') ? it.view : view;
     it.lines = computeGuideLinesJS(used, pts, ctx, it.vw, it.vh);
