@@ -41,6 +41,31 @@ function seekTo(v, t) {
     v.currentTime = t;
   });
 }
+// シーク後に「新しいフレームが実際に描画された」ことまで保証して待つ。
+// スマホのブラウザはseekedの時点ではまだ前のフレームが残っていることがあり、
+// そのまま解析すると検出・姿勢推定・ガイド線がすべてズレる
+function seekFrame(v, t) {
+  return new Promise(res => {
+    let done = false;
+    const finish = () => { if (!done) { done = true; res(); } };
+    if ('requestVideoFrameCallback' in HTMLVideoElement.prototype) {
+      v.requestVideoFrameCallback(() => finish());
+      const onSeeked = () => {
+        v.removeEventListener('seeked', onSeeked);
+        setTimeout(finish, 250); // rVFCが発火しない環境への保険
+      };
+      v.addEventListener('seeked', onSeeked);
+      v.currentTime = t;
+    } else {
+      const onSeeked = () => {
+        v.removeEventListener('seeked', onSeeked);
+        setTimeout(finish, 80);
+      };
+      v.addEventListener('seeked', onSeeked);
+      v.currentTime = t;
+    }
+  });
+}
 function waitMeta(v) {
   return new Promise((res, rej) => {
     if (v.readyState >= 1) return res();
@@ -174,7 +199,9 @@ async function analyzeItem(it) {
     await waitMeta(v);
     it.dur = v.duration;
     it.vw = v.videoWidth; it.vh = v.videoHeight;
-    const W = 160, H = 90, step = 0.1;
+    // 長い動画はシーク回数を抑える(検出アルゴリズムはfps可変に対応)
+    const W = 160, H = 90;
+    const step = it.dur > 120 ? 0.2 : 0.1;
     const cvs = document.createElement('canvas');
     cvs.width = W; cvs.height = H;
     const ctx = cvs.getContext('2d', { willReadFrequently: true });
@@ -183,7 +210,7 @@ async function analyzeItem(it) {
     const cellDiffs = [];
     const n = Math.floor(it.dur / step);
     for (let i = 0; i < n; i++) {
-      await seekTo(v, i * step);
+      await seekFrame(v, i * step);
       ctx.drawImage(v, 0, 0, W, H);
       const d = ctx.getImageData(0, 0, W, H).data;
       const gray = new Float32Array(W * H);
@@ -242,6 +269,7 @@ async function analyzeItem(it) {
 // インパクト音の検出(PC版impact_transients相当)
 async function detectImpacts(file) {
   try {
+    if (file.size > 200 * 1048576) return []; // 巨大ファイルはメモリ保護のためスキップ
     const buf = await file.arrayBuffer();
     const ab = await getAudioCtx().decodeAudioData(buf);
     const data = ab.getChannelData(0);
@@ -461,23 +489,46 @@ async function getPose() {
   return poseLandmarker;
 }
 
-async function poseAt(it, t) {
+// 複数の時刻で姿勢推定し、最も確度の高いフレームを採用する。
+// 1フレームだけだとボケ・ブレ・シーク不良で線がズレることがあるため
+async function poseBest(it, times) {
   const lmk = await getPose();
   const v = document.createElement('video');
   v.muted = true; v.playsInline = true; v.preload = 'auto';
   v.src = it.url;
   await waitMeta(v);
-  await seekTo(v, t);
-  await new Promise(r => setTimeout(r, 50)); // フレーム確定待ち
   const cvs = document.createElement('canvas');
   cvs.width = it.vw; cvs.height = it.vh;
   const ctx = cvs.getContext('2d', { willReadFrequently: true });
-  ctx.drawImage(v, 0, 0, it.vw, it.vh);
+  let best = null;
+  const views = [];
+  for (const t of times) {
+    await seekFrame(v, Math.max(0, Math.min(it.dur - 0.05, t)));
+    ctx.drawImage(v, 0, 0, it.vw, it.vh);
+    const res = lmk.detect(cvs);
+    if (!res.landmarks || !res.landmarks.length) continue;
+    const lm = res.landmarks[0];
+    const pts = lm.map(p => [p.x * it.vw, p.y * it.vh, p.z]);
+    // 主要ランドマーク(肩・腰・足首)の確度で採点
+    const key = [11, 12, 23, 24, 27, 28];
+    const vis = Math.min(...key.map(i => lm[i].visibility ?? 1));
+    views.push(classifyView(pts));
+    if (!best || vis > best.vis) {
+      best = { pts, vis, t };
+    }
+  }
+  let ballCtx = null;
+  if (best) {
+    await seekFrame(v, best.t);
+    ctx.drawImage(v, 0, 0, it.vw, it.vh);
+    ballCtx = ctx;
+  }
   v.removeAttribute('src'); v.load();
-  const res = lmk.detect(cvs);
-  if (!res.landmarks || !res.landmarks.length) return { pts: null, ctx };
-  const pts = res.landmarks[0].map(p => [p.x * it.vw, p.y * it.vh, p.z]);
-  return { pts, ctx };
+  if (!best) return { pts: null, ctx: null, view: null };
+  // 正面/後方は多数決で決める
+  const backVotes = views.filter(x => x === 'back').length;
+  const view = backVotes * 2 >= views.length ? 'back' : 'front';
+  return { pts: best.pts, ctx: ballCtx, view };
 }
 
 function classifyView(pts) {
@@ -609,9 +660,10 @@ async function ensureLines(it) {
   const key = `${it.start.toFixed(2)}|${it.view}`;
   if (it.linesKey === key) return;
   try {
-    const { pts, ctx } = await poseAt(it, it.start + 0.3);
+    const { pts, ctx, view } = await poseBest(it,
+      [it.start + 0.2, it.start + 0.5, it.start + 0.8]);
     if (!pts) { it.lines = null; it.linesKey = key; it.viewUsed = '人物検出できず'; return; }
-    const used = (it.view === 'front' || it.view === 'back') ? it.view : classifyView(pts);
+    const used = (it.view === 'front' || it.view === 'back') ? it.view : view;
     it.lines = computeGuideLinesJS(used, pts, ctx, it.vw, it.vh);
     it.viewUsed = used === 'front' ? '正面' : '後方';
     it.linesKey = key;
