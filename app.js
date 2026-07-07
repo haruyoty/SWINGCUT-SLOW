@@ -69,7 +69,9 @@ function seekFrame(v, t) {
 function hiddenVideo(url) {
   const v = document.createElement('video');
   v.muted = true; v.playsInline = true; v.preload = 'auto';
-  v.style.cssText = 'position:fixed;left:-9999px;top:0;width:2px;height:2px;opacity:0;pointer-events:none';
+  // 画面外(-9999px)に置くとiOSが描画を止めて古いフレームを返すため、
+  // 画面内の見えない2pxとして配置する
+  v.style.cssText = 'position:fixed;right:0;bottom:0;width:2px;height:2px;opacity:0.01;pointer-events:none;z-index:-1';
   v.src = url;
   document.body.appendChild(v);
   return v;
@@ -541,6 +543,13 @@ async function poseBest(it, times) {
     if (!res.landmarks || !res.landmarks.length) continue;
     const lm = res.landmarks[0];
     const pts = lm.map(p => [p.x * it.vw, p.y * it.vh, p.z]);
+    // アドレス姿勢の妥当性チェック: 手首は肩より下にあるはず。
+    // バックスイング中などのフレームを拾ってしまった場合は棄却する
+    // (線がすべて急角度にズレる主原因)
+    const wrY = (pts[15][1] + pts[16][1]) / 2;
+    const shY = (pts[11][1] + pts[12][1]) / 2;
+    const hipY = (pts[23][1] + pts[24][1]) / 2;
+    if (wrY < shY + (hipY - shY) * 0.25) continue;
     // 主要ランドマーク(肩・腰・足首)の確度で採点
     const key = [11, 12, 23, 24, 27, 28];
     const vis = Math.min(...key.map(i => lm[i].visibility ?? 1));
@@ -704,8 +713,10 @@ async function ensureLines(it) {
   if (it.linesKey === key) return;
   try {
     // 区間前半の「最も静止しているフレーム」=アドレスに最も近い瞬間を
-    // 姿勢推定に使う(検出区間が多少ズレていても線の位置が狂いにくい)
-    let times = [it.start + 0.2, it.start + 0.5, it.start + 0.8];
+    // 姿勢推定に使う(検出区間が多少ズレていても線の位置が狂いにくい)。
+    // 姿勢の妥当性チェックで棄却された場合に備えて候補は多めに渡す
+    let times = [it.start + 0.1, it.start + 0.3, it.start + 0.5,
+                 it.start + 0.7, it.start + 0.9];
     if (it.cellDiffs && it.cellDiffs.length) {
       const fps = it.fpsA;
       const i0 = Math.max(0, Math.floor(it.start * fps));
@@ -717,7 +728,10 @@ async function ensureLines(it) {
         calm.push([(s[0] + s[1] + s[2]) / 3, i / fps]);
       }
       calm.sort((a, b) => a[0] - b[0]);
-      if (calm.length >= 3) times = calm.slice(0, 3).map(x => x[1]);
+      if (calm.length >= 3) {
+        times = calm.slice(0, 4).map(x => x[1]);
+        times.push(it.start + 0.15); // 区間先頭付近も必ず候補に入れる
+      }
     }
     const { pts, ctx, view } = await poseBest(it, times);
     if (!pts) { it.lines = null; it.linesKey = key; it.viewUsed = '人物検出できず'; return; }
