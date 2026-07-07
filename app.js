@@ -8,10 +8,13 @@ const overlayCanvas = $('overlayCanvas');
 
 let items = [];
 window.DEBUG_ITEMS = items; // 開発検証用
+window.DEBUG_FN = null;     // 開発検証用(下部で設定)
 let cur = -1;
 let previewPhase = 0; // 0=off, 1=通常, 2=スロー
 let analyzing = false;
 let audioCtx = null;
+let exportVideo = null;   // 書き出し用に使い回すvideo要素
+let exportSrcNode = null; // その音声ノード(要素につき1回しか作れない)
 
 // ---------------- ユーティリティ ----------------
 function fmt(t) {
@@ -37,9 +40,15 @@ function getAudioCtx() {
 }
 function seekTo(v, t) {
   return new Promise(res => {
-    const done = () => { v.removeEventListener('seeked', done); res(); };
+    let hard = null;
+    const done = () => {
+      v.removeEventListener('seeked', done);
+      clearTimeout(hard);
+      res();
+    };
     v.addEventListener('seeked', done);
-    v.currentTime = t;
+    hard = setTimeout(done, 2500); // 発火しない環境でも固まらない保険
+    v.currentTime = Math.abs(v.currentTime - t) < 0.001 ? t + 0.013 : t;
   });
 }
 // シーク後に「新しいフレームが実際に描画された」ことまで保証して待つ。
@@ -48,9 +57,15 @@ function seekTo(v, t) {
 function seekFrame(v, t) {
   return new Promise(res => {
     let done = false;
-    const finish = () => { if (!done) { done = true; res(); } };
-    const onSeeked = () => {
+    let hardTimer = null;
+    const finish = () => {
+      if (done) return;
+      done = true;
+      clearTimeout(hardTimer);
       v.removeEventListener('seeked', onSeeked);
+      res();
+    };
+    const onSeeked = () => {
       // seeked後に新フレームの描画完了を待つ。先に仕込むと直前の
       // フレーム表示イベントを拾って古いフレームを解析してしまう
       if ('requestVideoFrameCallback' in HTMLVideoElement.prototype) {
@@ -61,7 +76,11 @@ function seekFrame(v, t) {
       }
     };
     v.addEventListener('seeked', onSeeked);
-    v.currentTime = t;
+    // どんな状況でも処理が止まらないための最終保険
+    hardTimer = setTimeout(finish, 2500);
+    // 現在位置と同じ時刻へのシークはseekedが発火しないことがあるため
+    // ごくわずかにずらす
+    v.currentTime = Math.abs(v.currentTime - t) < 0.001 ? t + 0.013 : t;
   });
 }
 // 解析用の非表示video。DOM上にないとフレーム描画イベントが
@@ -84,8 +103,41 @@ function disposeVideo(v) {
 function waitMeta(v) {
   return new Promise((res, rej) => {
     if (v.readyState >= 1) return res();
-    v.onloadedmetadata = () => res();
-    v.onerror = () => rej(new Error('動画を読み込めませんでした'));
+    let poll = null, hard = null;
+    const ok = () => { clearInterval(poll); clearTimeout(hard); res(); };
+    const ng = () => { clearInterval(poll); clearTimeout(hard); rej(new Error('動画を読み込めませんでした')); };
+    v.onloadedmetadata = ok;
+    v.onerror = ng;
+    poll = setInterval(() => {
+      if (v.readyState >= 1) ok();
+      else if (v.error) ng();
+    }, 250);
+    hard = setTimeout(ng, 12000);
+  });
+}
+// 使い回すvideo要素に新しい動画を読み込む(前の動画のreadyStateに
+// 惑わされないよう、イベントを張ってからsrcを差し替える)。
+// イベントが発火しない環境向けに状態ポーリングとタイムアウトの保険付き
+function loadInto(v, url) {
+  return new Promise((res, rej) => {
+    let poll = null, hard = null;
+    const cleanup = () => {
+      v.removeEventListener('loadedmetadata', onMeta);
+      v.removeEventListener('error', onErr);
+      clearInterval(poll);
+      clearTimeout(hard);
+    };
+    const onMeta = () => { cleanup(); res(); };
+    const onErr = () => { cleanup(); rej(new Error('動画を読み込めませんでした')); };
+    v.addEventListener('loadedmetadata', onMeta);
+    v.addEventListener('error', onErr);
+    v.src = url;
+    v.load();
+    poll = setInterval(() => {
+      if (v.readyState >= 1 && v.videoWidth > 0) onMeta();
+      else if (v.error) onErr();
+    }, 250);
+    hard = setTimeout(onErr, 8000);
   });
 }
 
@@ -1022,15 +1074,39 @@ $('export').onclick = async () => {
     const totalSec = items.reduce((s, it) => s + (it.end - it.start) * (1 + 1 / speed), 0);
     let doneSec = 0;
 
+    // 書き出し用のvideoは1つを使い回す。スマホは同時に使える動画
+    // プレーヤー数に上限があり、毎回作ると「動画を読み込めませんでした」
+    // エラーが出ることがある
+    if (!exportVideo) {
+      exportVideo = document.createElement('video');
+      exportVideo.playsInline = true; exportVideo.preload = 'auto';
+      exportSrcNode = ac.createMediaElementSource(exportVideo);
+    }
+    exportSrcNode.disconnect();
+    exportSrcNode.connect(recDest); // スピーカーには出さず録音のみ
+
     for (let idx = 0; idx < items.length; idx++) {
       const it = items[idx];
-      const ev = document.createElement('video');
-      ev.playsInline = true; ev.preload = 'auto';
-      ev.src = it.url;
-      await waitMeta(ev);
+      const ev = exportVideo;
+      // 読み込み失敗時は少し待って再試行(最大3回)
+      let loaded = false, lastErr = null;
+      for (let tryN = 0; tryN < 3 && !loaded; tryN++) {
+        try {
+          if (tryN > 0) {
+            ev.removeAttribute('src'); ev.load();
+            await new Promise(r => setTimeout(r, 900));
+          }
+          await loadInto(ev, it.url);
+          loaded = true;
+        } catch (err) {
+          lastErr = err;
+        }
+      }
+      if (!loaded) {
+        throw new Error('「' + it.file.name + '」を読み込めませんでした。' +
+          '端末のメモリ不足の可能性があります。ページを再読み込みして、動画の本数を減らしてお試しください');
+      }
       try { ev.preservesPitch = true; } catch (e) {}
-      const srcNode = ac.createMediaElementSource(ev);
-      srcNode.connect(recDest); // スピーカーには出さず録音のみ
       const rect = useZoom ? zoomRect(it, it.start, it.end, tw, th) : null;
       const cw = rect ? rect.cw : it.vw, chh = rect ? rect.ch : it.vh;
       const cx = rect ? rect.cx : 0, cy = rect ? rect.cy : 0;
@@ -1079,9 +1155,10 @@ $('export').onclick = async () => {
 
       await playPass(1, null, '通常速度');
       await playPass(speed, it.lines, 'スロー');
-      srcNode.disconnect();
-      ev.removeAttribute('src'); ev.load();
     }
+    exportSrcNode.disconnect();
+    exportVideo.removeAttribute('src');
+    exportVideo.load();
     recorder.stop();
     await stopped;
     const ext = mime.startsWith('video/mp4') ? 'mp4' : 'webm';
@@ -1111,3 +1188,6 @@ $('export').onclick = async () => {
 if (location.protocol === 'file:') {
   setStatus('⚠ このページはWebサーバー経由で開く必要があります(GitHub Pages等)', 'err');
 }
+
+// 開発検証用フック
+window.DEBUG_FN = { loadInto, seekTo, seekFrame, waitMeta };
