@@ -111,6 +111,7 @@ function addFiles(fileList) {
       candidates: [], candIndex: 0,
       start: null, end: null,
       view: 'auto', lines: null, linesKey: '',
+      ballManual: null,
       status: '待機中'
     });
   }
@@ -642,7 +643,8 @@ function detectBallBlob(ctx, near, searchR, rHint, vw, vh) {
 }
 
 // ガイド線の計算(PC版compute_guide_lines相当、線はすべて赤)
-function computeGuideLinesJS(view, pts, ctx, vw, vh) {
+// ballOverride: ユーザーがタップで指定したボール位置(自動検出より優先)
+function computeGuideLinesJS(view, pts, ctx, vw, vh, ballOverride) {
   const P = i => [pts[i][0], pts[i][1]];
   const nose = P(0);
   const earMid = [(pts[7][0] + pts[8][0]) / 2, (pts[7][1] + pts[8][1]) / 2];
@@ -665,10 +667,15 @@ function computeGuideLinesJS(view, pts, ctx, vw, vh) {
   // 出ている」ことで判定する。真後ろからの撮影では顔が見えず、
   // 鼻と耳の位置関係では誤判定するため
   const dx = wrMid[0] >= hipMid[0] ? 1 : -1;
-  let shaftEnd = [wrMid[0] + dx * 0.75 * (groundY - wrMid[1]), groundY];
   const rHint = Math.max(3, personH * 0.016);
-  const searchR = Math.max(80, personH * 0.25);
-  const ball = detectBallBlob(ctx, shaftEnd, searchR, rHint, vw, vh) || shaftEnd;
+  let ball;
+  if (ballOverride) {
+    ball = ballOverride;
+  } else {
+    const shaftEnd = [wrMid[0] + dx * 0.75 * (groundY - wrMid[1]), groundY];
+    const searchR = Math.max(80, personH * 0.25);
+    ball = detectBallBlob(ctx, shaftEnd, searchR, rHint, vw, vh) || shaftEnd;
+  }
 
   const lines = [];
   // 1. シャフトの線。ボールはクラブヘッドの先にあるため、起点を
@@ -677,7 +684,7 @@ function computeGuideLinesJS(view, pts, ctx, vw, vh) {
   const anchor = [ball[0] - dx * rHint * 3.2, ball[1]];
   const d1 = dist(anchor, wrMid) + 1e-6;
   const u1 = [(wrMid[0] - anchor[0]) / d1, (wrMid[1] - anchor[1]) / d1];
-  const shaftLen = d1 * 1.3;
+  const shaftLen = d1 * 1.6;
   lines.push([anchor[0], anchor[1],
               anchor[0] + u1[0] * shaftLen, anchor[1] + u1[1] * shaftLen]);
   // 2. ボール〜首の付け根(頭寄り)の線
@@ -709,7 +716,7 @@ async function ensureLines(it) {
     it.lines = null;
     return;
   }
-  const key = `${it.start.toFixed(2)}|${it.view}`;
+  const key = `${it.start.toFixed(2)}|${it.view}|${it.ballManual || ''}`;
   if (it.linesKey === key) return;
   try {
     // 区間前半の「最も静止しているフレーム」=アドレスに最も近い瞬間を
@@ -735,8 +742,11 @@ async function ensureLines(it) {
     }
     const { pts, ctx, view } = await poseBest(it, times);
     if (!pts) { it.lines = null; it.linesKey = key; it.viewUsed = '人物検出できず'; return; }
-    const used = (it.view === 'front' || it.view === 'back') ? it.view : view;
-    it.lines = computeGuideLinesJS(used, pts, ctx, it.vw, it.vh);
+    // ボールをタップで指定した場合は「後方の線を引きたい」という意思なので、
+    // 自動判定が正面になっていても後方として扱う(手動指定は常に優先)
+    let used = (it.view === 'front' || it.view === 'back') ? it.view : view;
+    if (it.ballManual && it.view === 'auto') used = 'back';
+    it.lines = computeGuideLinesJS(used, pts, ctx, it.vw, it.vh, it.ballManual);
     it.viewUsed = used === 'front' ? '正面' : '後方';
     it.linesKey = key;
   } catch (e) {
@@ -745,6 +755,63 @@ async function ensureLines(it) {
     it.viewUsed = '解析失敗';
   }
 }
+
+// ---------------- 線の即時確認 ----------------
+// 書き出しやプレビューを待たず、アドレスの画面に線を重ねて確認する
+$('showLines').onclick = async () => {
+  const it = items[cur];
+  if (!it) { setStatus('先に動画を読み込んでください', 'err'); return; }
+  if (it.start == null) { setStatus('先にスイング区間を設定してください', 'err'); return; }
+  if (!$('guides').checked || it.view === 'none') {
+    setStatus('ガイド線がオフになっています(チェックを入れるか、一覧のプルダウンを「線: 自動」にしてください)', 'err');
+    return;
+  }
+  stopPreview();
+  video.pause();
+  video.currentTime = Math.min(it.start + 0.2, video.duration || it.start);
+  setStatus('<span class="spinner"></span>線を計算しています…(初回はAIモデルの読み込みで少し時間がかかります)');
+  await ensureLines(it);
+  if (!it.lines) {
+    setStatus('⚠ 線を計算できませんでした(人物を検出できない動画の可能性があります)', 'err');
+    return;
+  }
+  drawOverlayLines(it);
+  setStatus('✅ 線を表示しています(' + (it.viewUsed || '') + ')。ズレている場合は「🎯 ボール位置を指定」でボールをタップしてください', 'ok');
+};
+
+// ---------------- ボール位置の手動指定 ----------------
+// 夜間・傾斜地などで自動検出が外れたとき、動画上のボールを
+// タップしてもらい、その位置でガイド線を引き直す
+let pickMode = false;
+$('pickBall').onclick = async () => {
+  const it = items[cur];
+  if (!it) { setStatus('先に動画を読み込んでください', 'err'); return; }
+  if (it.start == null) { setStatus('先にスイング区間を設定してください', 'err'); return; }
+  stopPreview();
+  // アドレスの位置に移動して止め、タップしやすくする
+  video.currentTime = Math.min(it.start + 0.2, video.duration || it.start);
+  pickMode = true;
+  $('pickBall').textContent = '👆 ボールをタップ…';
+  setStatus('動画の中の「ボール」を直接タップ(クリック)してください', 'ok');
+};
+video.parentElement.addEventListener('click', async (e) => {
+  if (!pickMode) return;
+  e.preventDefault();
+  e.stopPropagation();
+  pickMode = false;
+  $('pickBall').textContent = '🎯 ボール位置を指定';
+  const it = items[cur];
+  if (!it) return;
+  const rect = video.getBoundingClientRect();
+  const sx = (e.clientX - rect.left) / rect.width * it.vw;
+  const sy = (e.clientY - rect.top) / rect.height * it.vh;
+  it.ballManual = [Math.round(sx), Math.round(sy)];
+  it.linesKey = '';
+  setStatus('<span class="spinner"></span>線を引き直しています…');
+  await ensureLines(it);
+  drawOverlayLines(it); // その場で線を表示して確認できるようにする
+  setStatus('✅ ボール位置を設定しました。線を画面に表示中です(プレビューや書き出しにも反映されます)', 'ok');
+}, true);
 
 // ---------------- 範囲設定・候補・プレビュー ----------------
 $('detect').onclick = async () => {
@@ -812,6 +879,7 @@ $('preview').onclick = async () => {
   clearOverlay();
   video.play();
 };
+let phaseSwitching = false; // スロー切り替え中のシークによるpauseを無視する
 video.addEventListener('timeupdate', () => {
   if (!previewPhase) return;
   const it = items[cur];
@@ -819,16 +887,25 @@ video.addEventListener('timeupdate', () => {
   if (video.currentTime >= it.end) {
     if (previewPhase === 1) {
       previewPhase = 2;
+      phaseSwitching = true;
+      const rate = parseFloat($('speed').value);
       video.currentTime = it.start;
-      video.playbackRate = parseFloat($('speed').value);
       showBadge($('speed').value + '倍速');
       drawOverlayLines(it);
+      // スマホではシークで再生が止まることがあるため明示的に再開する。
+      // playbackRateはplay後にもう一度設定(リセットする端末がある)
+      const p = video.play();
+      (p || Promise.resolve()).then(() => {
+        video.playbackRate = rate;
+        phaseSwitching = false;
+      }).catch(() => { phaseSwitching = false; });
     } else {
       stopPreview();
     }
   }
 });
 video.addEventListener('pause', () => {
+  if (phaseSwitching) return;
   const it = items[cur];
   if (previewPhase && it && video.currentTime < it.end - 0.05) stopPreview();
 });
