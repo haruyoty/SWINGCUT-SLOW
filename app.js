@@ -742,10 +742,9 @@ async function ensureLines(it) {
     }
     const { pts, ctx, view } = await poseBest(it, times);
     if (!pts) { it.lines = null; it.linesKey = key; it.viewUsed = '人物検出できず'; return; }
-    // ボールをタップで指定した場合は「後方の線を引きたい」という意思なので、
-    // 自動判定が正面になっていても後方として扱う(手動指定は常に優先)
-    let used = (it.view === 'front' || it.view === 'back') ? it.view : view;
-    if (it.ballManual && it.view === 'auto') used = 'back';
+    // 正面の動画ではボール位置は使わない(鼻の縦線のまま)。
+    // タップ指定が効くのは後方の線のみ
+    const used = (it.view === 'front' || it.view === 'back') ? it.view : view;
     it.lines = computeGuideLinesJS(used, pts, ctx, it.vw, it.vh, it.ballManual);
     it.viewUsed = used === 'front' ? '正面' : '後方';
     it.linesKey = key;
@@ -814,7 +813,11 @@ $('pickLayer').addEventListener('pointerdown', async (e) => {
     return;
   }
   drawOverlayLines(it); // その場で線を表示して確認できるようにする
-  setStatus('✅ ボール位置を設定しました。線を画面に表示中です(プレビューや書き出しにも反映されます)', 'ok');
+  if (it.viewUsed === '正面') {
+    setStatus('ℹ この動画は「正面」と判定されているため、線は鼻の位置の縦線のままです。後方の3本線にしたい場合は、一覧のプルダウンで「線: 後方」を選んでからもう一度お試しください', 'ok');
+  } else {
+    setStatus('✅ ボール位置を設定しました。線を画面に表示中です(プレビューや書き出しにも反映されます)', 'ok');
+  }
 });
 
 // ---------------- 範囲設定・候補・プレビュー ----------------
@@ -886,6 +889,10 @@ $('preview').onclick = async () => {
 let phaseSwitching = false; // スロー切り替え中のシークによるpauseを無視する
 video.addEventListener('timeupdate', () => {
   if (!previewPhase) return;
+  // 切り替えの巻き戻しが終わる前に届いたイベントは無視する。
+  // スマホでは巻き戻し完了前にcurrentTimeが古いままのイベントが届き、
+  // 「スローも終わった」と誤判定してプレビューが打ち切られていた
+  if (phaseSwitching || video.seeking) return;
   const it = items[cur];
   if (!it) return;
   if (video.currentTime >= it.end) {
