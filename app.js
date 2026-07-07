@@ -782,24 +782,24 @@ $('showLines').onclick = async () => {
 // ---------------- ボール位置の手動指定 ----------------
 // 夜間・傾斜地などで自動検出が外れたとき、動画上のボールを
 // タップしてもらい、その位置でガイド線を引き直す
-let pickMode = false;
+// スマホでは動画プレーヤーへのタップが再生コントロールに吸収されて
+// ツールに届かないため、指定モード中は専用のタップ受け取りレイヤーを
+// 動画の上にかぶせる
 $('pickBall').onclick = async () => {
   const it = items[cur];
   if (!it) { setStatus('先に動画を読み込んでください', 'err'); return; }
   if (it.start == null) { setStatus('先にスイング区間を設定してください', 'err'); return; }
   stopPreview();
+  video.pause();
   // アドレスの位置に移動して止め、タップしやすくする
   video.currentTime = Math.min(it.start + 0.2, video.duration || it.start);
-  pickMode = true;
-  $('pickBall').textContent = '👆 ボールをタップ…';
-  setStatus('動画の中の「ボール」を直接タップ(クリック)してください', 'ok');
+  $('pickLayer').classList.remove('hidden');
+  setStatus('動画の中の「ボール」を直接タップしてください', 'ok');
 };
-video.parentElement.addEventListener('click', async (e) => {
-  if (!pickMode) return;
+$('pickLayer').addEventListener('pointerdown', async (e) => {
   e.preventDefault();
   e.stopPropagation();
-  pickMode = false;
-  $('pickBall').textContent = '🎯 ボール位置を指定';
+  $('pickLayer').classList.add('hidden');
   const it = items[cur];
   if (!it) return;
   const rect = video.getBoundingClientRect();
@@ -809,9 +809,13 @@ video.parentElement.addEventListener('click', async (e) => {
   it.linesKey = '';
   setStatus('<span class="spinner"></span>線を引き直しています…');
   await ensureLines(it);
+  if (!it.lines) {
+    setStatus('⚠ 線を計算できませんでした。「📏 線を今すぐ表示」でもう一度お試しください', 'err');
+    return;
+  }
   drawOverlayLines(it); // その場で線を表示して確認できるようにする
   setStatus('✅ ボール位置を設定しました。線を画面に表示中です(プレビューや書き出しにも反映されます)', 'ok');
-}, true);
+});
 
 // ---------------- 範囲設定・候補・プレビュー ----------------
 $('detect').onclick = async () => {
