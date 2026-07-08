@@ -799,6 +799,8 @@ async function ensureLines(it) {
     const used = (it.view === 'front' || it.view === 'back') ? it.view : view;
     it.lines = computeGuideLinesJS(used, pts, ctx, it.vw, it.vh, it.ballManual);
     it.viewUsed = used === 'front' ? '正面' : '後方';
+    it.posePts = pts;   // ドラッグ調整の即時再計算用にキャッシュ
+    it.poseUsed = used;
     it.linesKey = key;
   } catch (e) {
     it.lines = null;
@@ -834,8 +836,8 @@ $('showLines').onclick = async () => {
 // 夜間・傾斜地などで自動検出が外れたとき、動画上のボールを
 // タップしてもらい、その位置でガイド線を引き直す
 // スマホでは動画プレーヤーへのタップが再生コントロールに吸収されて
-// ツールに届かないため、指定モード中は専用のタップ受け取りレイヤーを
-// 動画の上にかぶせる
+// ツールに届かないため、調整モード中は専用のタップ受け取りレイヤーを
+// 動画の上にかぶせる。タップまたはドラッグで線がリアルタイムに動く
 $('pickBall').onclick = async () => {
   const it = items[cur];
   if (!it) { setStatus('先に動画を読み込んでください', 'err'); return; }
@@ -844,32 +846,56 @@ $('pickBall').onclick = async () => {
   video.pause();
   // アドレスの位置に移動して止め、タップしやすくする
   video.currentTime = Math.min(it.start + 0.2, video.duration || it.start);
-  $('pickLayer').classList.remove('hidden');
-  setStatus('動画の中の「ボール」を直接タップしてください', 'ok');
-};
-$('pickLayer').addEventListener('pointerdown', async (e) => {
-  e.preventDefault();
-  e.stopPropagation();
-  $('pickLayer').classList.add('hidden');
-  const it = items[cur];
-  if (!it) return;
-  const rect = video.getBoundingClientRect();
-  const sx = (e.clientX - rect.left) / rect.width * it.vw;
-  const sy = (e.clientY - rect.top) / rect.height * it.vh;
-  it.ballManual = [Math.round(sx), Math.round(sy)];
-  it.linesKey = '';
-  setStatus('<span class="spinner"></span>線を引き直しています…');
-  await ensureLines(it);
-  if (!it.lines) {
-    setStatus('⚠ 線を計算できませんでした。「📏 線を今すぐ表示」でもう一度お試しください', 'err');
+  setStatus('<span class="spinner"></span>線を計算しています…');
+  await ensureLines(it); // 姿勢をキャッシュし、以後のドラッグは即時反映
+  if (!it.lines || !it.posePts) {
+    setStatus('⚠ 線を計算できませんでした(人物を検出できない可能性があります)', 'err');
     return;
   }
-  drawOverlayLines(it); // その場で線を表示して確認できるようにする
+  drawOverlayLines(it);
   if (it.viewUsed === '正面') {
-    setStatus('ℹ この動画は「正面」と判定されているため、線は鼻の位置の縦線のままです。後方の3本線にしたい場合は、一覧のプルダウンで「線: 後方」を選んでからもう一度お試しください', 'ok');
-  } else {
-    setStatus('✅ ボール位置を設定しました。線を画面に表示中です(プレビューや書き出しにも反映されます)', 'ok');
+    setStatus('ℹ この動画は「正面」と判定されているため、線は鼻の位置の縦線のままです(ボール位置は使いません)。後方の3本線にしたい場合は、一覧のプルダウンで「線: 後方」を選んでからもう一度お試しください', 'ok');
+    return;
   }
+  $('pickLayer').classList.remove('hidden');
+  setStatus('ボールをタップ、または指でドラッグすると線が付いてきます。位置が決まったら「✓ 完了」を押してください', 'ok');
+};
+
+let pickDragging = false;
+let pickRaf = false;
+function applyPick(e) {
+  const it = items[cur];
+  if (!it || !it.posePts || it.poseUsed !== 'back') return;
+  const rect = video.getBoundingClientRect();
+  const sx = Math.round((e.clientX - rect.left) / rect.width * it.vw);
+  const sy = Math.round((e.clientY - rect.top) / rect.height * it.vh);
+  it.ballManual = [sx, sy];
+  if (pickRaf) return;
+  pickRaf = true;
+  requestAnimationFrame(() => {
+    pickRaf = false;
+    it.lines = computeGuideLinesJS('back', it.posePts, null, it.vw, it.vh, it.ballManual);
+    it.linesKey = `${it.start.toFixed(2)}|${it.view}|${it.ballManual}`;
+    drawOverlayLines(it);
+  });
+}
+$('pickLayer').addEventListener('pointerdown', (e) => {
+  if (e.target.id === 'pickDone') return;
+  e.preventDefault();
+  pickDragging = true;
+  try { $('pickLayer').setPointerCapture(e.pointerId); } catch (err) {}
+  applyPick(e);
+});
+$('pickLayer').addEventListener('pointermove', (e) => {
+  if (pickDragging) { e.preventDefault(); applyPick(e); }
+});
+$('pickLayer').addEventListener('pointerup', () => { pickDragging = false; });
+$('pickLayer').addEventListener('pointercancel', () => { pickDragging = false; });
+$('pickDone').addEventListener('click', (e) => {
+  e.stopPropagation();
+  pickDragging = false;
+  $('pickLayer').classList.add('hidden');
+  setStatus('✅ ボール位置を設定しました(プレビューや書き出しにも反映されます)', 'ok');
 });
 
 // ---------------- 範囲設定・候補・プレビュー ----------------
@@ -1123,14 +1149,16 @@ $('export').onclick = async () => {
           const draw = () => {
             if (ev.currentTime >= it.end || ev.ended) {
               ev.pause();
-              if (recorder.state === 'recording') recorder.pause(); // シーク中は録画を止める
+              // 注意: ここで録画を一時停止してはいけない。iPhoneのSafariは
+              // 一時停止すると動画の長さ情報を最初の区間分しか書き込まず、
+              // 編集アプリで3秒しか読めないファイルになる。連続録画のまま
+              // 次のパスへ移る(切り替えの一瞬は直前の画面が静止表示される)
               doneSec += segDur / rate;
               return resolve();
             }
             if (!started) {
               started = true;
               if (recorder.state === 'inactive') recorder.start(500);
-              else if (recorder.state === 'paused') recorder.resume();
             }
             ctx.fillStyle = '#000';
             ctx.fillRect(0, 0, tw, th);
