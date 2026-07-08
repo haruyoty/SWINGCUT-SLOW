@@ -141,6 +141,69 @@ function loadInto(v, url) {
   });
 }
 
+// ---------------- 状態の自動保存・復元 ----------------
+// スマホは他のアプリに切り替えるとページを破棄することがあるため、
+// 動画と解析結果を端末内(IndexedDB)に保存し、再読み込み時に復元する
+function dbOpen() {
+  return new Promise((res, rej) => {
+    const r = indexedDB.open('swingtool', 1);
+    r.onupgradeneeded = () => r.result.createObjectStore('session');
+    r.onsuccess = () => res(r.result);
+    r.onerror = () => rej(r.error);
+  });
+}
+let saveTimer = null;
+function saveSession() {
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(async () => {
+    try {
+      const data = items.map(it => ({
+        file: it.file, dur: it.dur, vw: it.vw, vh: it.vh,
+        cellDiffs: it.cellDiffs, fpsA: it.fpsA,
+        candidates: it.candidates, candIndex: it.candIndex,
+        start: it.start, end: it.end, view: it.view,
+        ballManual: it.ballManual, lines: it.lines, linesKey: it.linesKey,
+        posePts: it.posePts || null, poseUsed: it.poseUsed || null,
+        viewUsed: it.viewUsed || null
+      }));
+      const db = await dbOpen();
+      const tx = db.transaction('session', 'readwrite');
+      if (data.length) tx.objectStore('session').put(data, 'items');
+      else tx.objectStore('session').delete('items');
+      await new Promise((res, rej) => {
+        tx.oncomplete = res;
+        tx.onerror = () => rej(tx.error);
+      });
+      db.close();
+    } catch (e) { /* 容量不足などは黙って諦める(動作には影響しない) */ }
+  }, 600);
+}
+async function restoreSession() {
+  try {
+    const db = await dbOpen();
+    const tx = db.transaction('session', 'readonly');
+    const req = tx.objectStore('session').get('items');
+    const data = await new Promise((res, rej) => {
+      req.onsuccess = () => res(req.result);
+      req.onerror = () => rej(req.error);
+    });
+    db.close();
+    if (!data || !data.length) return;
+    for (const d of data) {
+      items.push({
+        ...d,
+        url: URL.createObjectURL(d.file),
+        status: d.cellDiffs ? '✅ 検出済み' : '待機中'
+      });
+    }
+    $('editor').classList.remove('hidden');
+    renderQueue();
+    select(0, true);
+    setStatus('✅ 前回の動画を復元しました(不要な場合は一覧の✕で削除できます)', 'ok');
+    analyzeAll(); // 解析が終わっていないものがあれば続きから
+  } catch (e) { /* 復元失敗時は普通に空の状態で開始 */ }
+}
+
 // ---------------- ファイル読み込み ----------------
 const drop = $('drop');
 drop.addEventListener('dragover', e => { e.preventDefault(); drop.classList.add('over'); });
@@ -170,6 +233,7 @@ function addFiles(fileList) {
   $('editor').classList.remove('hidden');
   renderQueue();
   if (cur < 0) select(items.length - fileList.length);
+  saveSession();
   analyzeAll();
 }
 
@@ -197,7 +261,7 @@ function renderQueue() {
       sel.appendChild(o);
     });
     sel.onclick = e => e.stopPropagation();
-    sel.onchange = e => { it.view = e.target.value; it.linesKey = ''; };
+    sel.onchange = e => { it.view = e.target.value; it.linesKey = ''; saveSession(); };
     row.appendChild(sel);
     const del = document.createElement('button');
     del.className = 'qdel';
@@ -211,6 +275,7 @@ function renderQueue() {
 function removeItem(i) {
   URL.revokeObjectURL(items[i].url);
   items.splice(i, 1);
+  saveSession();
   if (!items.length) {
     cur = -1;
     $('editor').classList.add('hidden');
@@ -318,6 +383,7 @@ async function analyzeItem(it) {
     it.end = it.candidates[0].end;
     it.linesKey = '';
     it.status = '✅ 検出済み';
+    saveSession();
     if (items[cur] === it) {
       refreshTimes();
       video.currentTime = it.start;
@@ -802,6 +868,7 @@ async function ensureLines(it) {
     it.posePts = pts;   // ドラッグ調整の即時再計算用にキャッシュ
     it.poseUsed = used;
     it.linesKey = key;
+    saveSession();
   } catch (e) {
     it.lines = null;
     it.linesKey = key;
@@ -895,6 +962,7 @@ $('pickDone').addEventListener('click', (e) => {
   e.stopPropagation();
   pickDragging = false;
   $('pickLayer').classList.add('hidden');
+  saveSession();
   setStatus('✅ ボール位置を設定しました(プレビューや書き出しにも反映されます)', 'ok');
 });
 
@@ -912,7 +980,7 @@ $('nextCand').onclick = () => {
   it.candIndex = (it.candIndex + 1) % it.candidates.length;
   const c = it.candidates[it.candIndex];
   it.start = c.start; it.end = c.end; it.linesKey = '';
-  refreshTimes(); renderQueue();
+  refreshTimes(); renderQueue(); saveSession();
   video.currentTime = it.start;
   setStatus(`✅ 候補${it.candIndex + 1}/${it.candidates.length}: ` +
     fmt(it.start) + ' 〜 ' + fmt(it.end), 'ok');
@@ -921,13 +989,13 @@ $('setStart').onclick = () => {
   const it = items[cur];
   if (!it) return;
   it.start = video.currentTime; it.linesKey = '';
-  refreshTimes(); renderQueue();
+  refreshTimes(); renderQueue(); saveSession();
 };
 $('setEnd').onclick = () => {
   const it = items[cur];
   if (!it) return;
   it.end = video.currentTime;
-  refreshTimes(); renderQueue();
+  refreshTimes(); renderQueue(); saveSession();
 };
 document.querySelectorAll('[data-adj]').forEach(btn => {
   btn.onclick = () => {
@@ -943,7 +1011,7 @@ document.querySelectorAll('[data-adj]').forEach(btn => {
       it.end = Math.min(video.duration || Infinity, Math.max(0, it.end + d));
       video.currentTime = it.end;
     }
-    refreshTimes(); renderQueue();
+    refreshTimes(); renderQueue(); saveSession();
   };
 });
 
@@ -1216,6 +1284,7 @@ $('export').onclick = async () => {
 if (location.protocol === 'file:') {
   setStatus('⚠ このページはWebサーバー経由で開く必要があります(GitHub Pages等)', 'err');
 }
+restoreSession();
 
 // 開発検証用フック
 window.DEBUG_FN = { loadInto, seekTo, seekFrame, waitMeta };
