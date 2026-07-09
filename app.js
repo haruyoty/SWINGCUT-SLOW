@@ -1380,6 +1380,14 @@ $('export').onclick = async () => {
   }
 };
 
+// 左下の再生/一時停止ボタン(中央の再生マークを消したので端に用意)
+$('cornerPlay').addEventListener('click', (e) => {
+  e.stopPropagation();
+  if (video.paused) video.play(); else video.pause();
+});
+video.addEventListener('play', () => { $('cornerPlay').textContent = '⏸'; });
+video.addEventListener('pause', () => { $('cornerPlay').textContent = '▶'; });
+
 // 起動時チェック
 if (location.protocol === 'file:') {
   setStatus('⚠ このページはWebサーバー経由で開く必要があります(GitHub Pages等)', 'err');
