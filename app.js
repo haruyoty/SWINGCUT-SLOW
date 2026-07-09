@@ -1099,6 +1099,33 @@ function drawOverlayLines(it) {
 }
 
 // ---------------- 書き出し(MediaRecorder) ----------------
+// 変換後の動画が本当に再生できるかを確認する。
+// メタデータだけでなく「再生可能な状態(canplay)」まで到達し、
+// かつ実際に1フレーム進めるかまで検証する(スマホでの再生保証)
+function canPlay(blob) {
+  return new Promise(res => {
+    const v = document.createElement('video');
+    v.muted = true; v.playsInline = true; v.preload = 'auto';
+    const url = URL.createObjectURL(blob);
+    let done = false;
+    const finish = (ok) => {
+      if (done) return; done = true;
+      try { v.pause(); } catch (e) {}
+      URL.revokeObjectURL(url);
+      res(ok);
+    };
+    // 長さが読めて、再生可能状態まで来たらOK
+    v.oncanplay = () => {
+      if (isFinite(v.duration) && v.duration > 0.5) finish(true);
+    };
+    v.onerror = () => finish(false);
+    v.onstalled = () => {};
+    setTimeout(() => finish(v.readyState >= 3 && isFinite(v.duration) && v.duration > 0.5), 8000);
+    v.src = url;
+    v.load();
+  });
+}
+
 function pickMime() {
   const cands = [
     'video/mp4;codecs=avc1.640028,mp4a.40.2',
@@ -1268,7 +1295,9 @@ $('export').onclick = async () => {
       setStatus('<span class="spinner"></span>編集アプリで使える形式に変換しています…(最後の仕上げ)');
       try {
         const fixed = await remuxToFlatMP4(blob);
-        if (fixed && fixed.size > 0) blob = fixed;
+        // 変換後が確実に再生できるか検証してから採用する。
+        // 万一再生できない結果になった場合は元のファイル(再生可能)を使う
+        if (fixed && fixed.size > 0 && await canPlay(fixed)) blob = fixed;
       } catch (e) { /* 変換失敗時は元のまま保存(再生は可能) */ }
     }
     const url = URL.createObjectURL(blob);

@@ -145,20 +145,7 @@
     }));
   };
 
-  function assemble(tracksMap) {
-    const trs = Object.values(tracksMap).filter(t => t.samples.length);
-    const ftyp = box('ftyp', str4('isom'), b32(0x200), str4('isom'), str4('iso2'), str4('avc1'), str4('mp41'));
-    // mdatのデータ開始位置 = ftyp + mdatヘッダ8
-    const mdatDataStart = ftyp.length + 8;
-    let running = mdatDataStart;
-    const dataChunks = [];
-    for (const tr of trs) {
-      tr.chunkOffset = running;
-      for (const s of tr.samples) { dataChunks.push(s.data); running += s.size; }
-    }
-    const mdatSize = running - (ftyp.length); // 8ヘッダ + データ
-    const mdatHeader = concat([b32(mdatSize), str4('mdat')]);
-
+  function buildMoov(trs) {
     let maxMovieDur = 0;
     const trakBoxes = [];
     for (const tr of trs) {
@@ -170,8 +157,30 @@
       b32(0x00010000), b16(0x0100), b16(0), b32(0), b32(0), MATRIX,
       b32(0), b32(0), b32(0), b32(0), b32(0), b32(0),
       b32((trs.reduce((m, t) => Math.max(m, t.id), 0)) + 1));
-    const moov = box('moov', mvhd, ...trakBoxes);
+    return box('moov', mvhd, ...trakBoxes);
+  }
 
-    return new Blob([ftyp, mdatHeader, ...dataChunks, moov], { type: 'video/mp4' });
+  function assemble(tracksMap) {
+    const trs = Object.values(tracksMap).filter(t => t.samples.length);
+    // スマホ由来の動画と同じく映像トラックを先頭にする(再生互換性のため)
+    trs.sort((a, b) => (a.type === 'video' ? 0 : 1) - (b.type === 'video' ? 0 : 1));
+    const ftyp = box('ftyp', str4('isom'), b32(0x200), str4('isom'), str4('iso2'), str4('avc1'), str4('mp41'));
+    // スマホでの互換性のためfaststart(moovをmdatより前)にする。
+    // stco(チャンクオフセット)はmoovの中にあるので、まず仮オフセットで
+    // moovを作ってサイズを測り、正しいオフセットで作り直す(サイズは不変)
+    for (const tr of trs) tr.chunkOffset = 0;
+    const moovSize = buildMoov(trs).length;
+    const mdatDataStart = ftyp.length + moovSize + 8; // ftyp + moov + mdatヘッダ
+    let running = mdatDataStart;
+    const dataChunks = [];
+    for (const tr of trs) {
+      tr.chunkOffset = running;
+      for (const s of tr.samples) { dataChunks.push(s.data); running += s.size; }
+    }
+    const moov = buildMoov(trs); // 本番オフセットで再構築
+    const mdatSize = running - mdatDataStart + 8; // 8ヘッダ + データ
+    const mdatHeader = concat([b32(mdatSize), str4('mdat')]);
+
+    return new Blob([ftyp, moov, mdatHeader, ...dataChunks], { type: 'video/mp4' });
   }
 })();
