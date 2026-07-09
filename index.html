@@ -111,7 +111,7 @@
 </head>
 <body>
 <div class="app">
-  <h1>⛳ スイング動画編集ツール <span style="font-size:12px;color:#93a0b5">v21</span></h1>
+  <h1>⛳ スイング動画編集ツール <span style="font-size:12px;color:#93a0b5">v22</span></h1>
   <div class="sub">ゴルフスイングを自動検出し、「通常速度 → スロー再生(ガイド線付き)」の動画を作成します。複数の動画は1本に連結されます。動画はどこにも送信されず、すべてこの端末の中で処理されます。</div>
 
   <label class="drop" id="drop">
@@ -128,7 +128,7 @@
       <div class="badge hidden" id="badge"></div>
       <div id="pickLayer" class="hidden"
            style="position:absolute;inset:0;z-index:5;cursor:crosshair;background:rgba(20,40,80,0.12);touch-action:none">
-        <div style="position:absolute;top:10px;left:50%;transform:translateX(-50%);background:rgba(0,0,0,.75);color:#ffd76e;padding:8px 16px;border-radius:8px;font-size:14px;white-space:nowrap">⛳ ボールをタップ/ドラッグで線を調整</div>
+        <div style="position:absolute;top:10px;left:50%;transform:translateX(-50%);background:rgba(0,0,0,.75);color:#ffd76e;padding:8px 16px;border-radius:8px;font-size:14px;white-space:nowrap">✏️ 動かしたい線をドラッグ(1本ずつ動きます)</div>
         <button id="pickDone"
                 style="position:absolute;top:8px;right:8px;background:#2f7d4f;color:#fff;border:none;border-radius:8px;padding:7px 14px;font-size:14px;font-family:inherit;opacity:0.9">✓ 完了</button>
       </div>
@@ -139,8 +139,8 @@
         <button class="accent" id="detect">🔍 スイングを再検出</button>
         <button id="nextCand" class="hidden">↪ 別の候補を試す</button>
         <button id="showLines">📏 線を今すぐ表示</button>
-        <button id="pickBall">🎯 ボール位置を指定</button>
-        <span class="hint">「線を今すぐ表示」で書き出し前に線を確認できます。ズレていたら「ボール位置を指定」でボールをタップ</span>
+        <button id="pickBall">✏️ 線を動かす</button>
+        <span class="hint">「線を今すぐ表示」で線を確認できます。ズレていたら「線を動かす」で、各線を1本ずつドラッグして調整できます</span>
       </div>
       <div class="row">
         <span class="label">スイング開始</span>
@@ -193,7 +193,7 @@
   </div>
 </div>
 <script src="lib/mp4box.all.min.js"></script>
-<script src="remux.js?v=21"></script>
-<script type="module" src="app.js?v=21"></script>
+<script src="remux.js?v=22"></script>
+<script type="module" src="app.js?v=22"></script>
 </body>
 </html>

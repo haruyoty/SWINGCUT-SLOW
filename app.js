@@ -163,6 +163,7 @@ function saveSession() {
         candidates: it.candidates, candIndex: it.candIndex,
         start: it.start, end: it.end, view: it.view,
         ballManual: it.ballManual, lines: it.lines, linesKey: it.linesKey,
+        linesEdited: it.linesEdited || false,
         posePts: it.posePts || null, poseUsed: it.poseUsed || null,
         viewUsed: it.viewUsed || null
       }));
@@ -261,7 +262,7 @@ function renderQueue() {
       sel.appendChild(o);
     });
     sel.onclick = e => e.stopPropagation();
-    sel.onchange = e => { it.view = e.target.value; it.linesKey = ''; saveSession(); };
+    sel.onchange = e => { it.view = e.target.value; it.linesKey = ''; it.linesEdited = false; saveSession(); };
     row.appendChild(sel);
     const del = document.createElement('button');
     del.className = 'qdel';
@@ -381,7 +382,7 @@ async function analyzeItem(it) {
     it.candIndex = 0;
     it.start = it.candidates[0].start;
     it.end = it.candidates[0].end;
-    it.linesKey = '';
+    it.linesKey = ''; it.linesEdited = false;
     it.status = '✅ 検出済み';
     saveSession();
     if (items[cur] === it) {
@@ -831,9 +832,11 @@ function computeGuideLinesJS(view, pts, ctx, vw, vh, ballOverride) {
 // ガイド線を(必要なら)計算してitemにキャッシュする
 async function ensureLines(it) {
   if (!$('guides').checked || it.view === 'none' || it.start == null) {
-    it.lines = null;
+    if (!it.linesEdited) it.lines = null; // 手動編集した線は消さない
     return;
   }
+  // 手動で線を動かした場合は、その線を保持して自動計算しない
+  if (it.linesEdited && it.lines && it.lines.length) return;
   const key = `${it.start.toFixed(2)}|${it.view}|${it.ballManual || ''}`;
   if (it.linesKey === key) return;
   try {
@@ -900,73 +903,90 @@ $('showLines').onclick = async () => {
 };
 
 // ---------------- ボール位置の手動指定 ----------------
-// 夜間・傾斜地などで自動検出が外れたとき、動画上のボールを
-// タップしてもらい、その位置でガイド線を引き直す
+// ガイド線を1本ずつドラッグで動かせる調整モード。
 // スマホでは動画プレーヤーへのタップが再生コントロールに吸収されて
-// ツールに届かないため、調整モード中は専用のタップ受け取りレイヤーを
-// 動画の上にかぶせる。タップまたはドラッグで線がリアルタイムに動く
+// ツールに届かないため、専用のタップ受け取りレイヤーを動画の上にかぶせる。
+// 触った位置に一番近い線をつかんで、その線だけを平行移動する。
 $('pickBall').onclick = async () => {
   const it = items[cur];
   if (!it) { setStatus('先に動画を読み込んでください', 'err'); return; }
   if (it.start == null) { setStatus('先にスイング区間を設定してください', 'err'); return; }
   stopPreview();
   video.pause();
-  // アドレスの位置に移動して止め、タップしやすくする
   video.currentTime = Math.min(it.start + 0.2, video.duration || it.start);
   setStatus('<span class="spinner"></span>線を計算しています…');
-  await ensureLines(it); // 姿勢をキャッシュし、以後のドラッグは即時反映
-  if (!it.lines || !it.posePts) {
+  await ensureLines(it);
+  if (!it.lines || !it.lines.length) {
     setStatus('⚠ 線を計算できませんでした(人物を検出できない可能性があります)', 'err');
     return;
   }
   drawOverlayLines(it);
-  if (it.viewUsed === '正面') {
-    setStatus('ℹ この動画は「正面」と判定されているため、線は鼻の位置の縦線のままです(ボール位置は使いません)。後方の3本線にしたい場合は、一覧のプルダウンで「線: 後方」を選んでからもう一度お試しください', 'ok');
-    return;
-  }
-  // 指定中は動画の再生ボタン・シークバー等を隠してタップしやすくする
+  // 指定中は動画の再生ボタン・シークバー等を隠して線をつかみやすくする
   video.removeAttribute('controls');
   $('pickLayer').classList.remove('hidden');
-  setStatus('ボールをタップ、または指でドラッグすると線が付いてきます。位置が決まったら「✓ 完了」を押してください', 'ok');
+  setStatus('動かしたい線をドラッグしてください(線は1本ずつ動きます)。決まったら「✓ 完了」を押してください', 'ok');
 };
 
-let pickDragging = false;
+// 点(px,py)と線分(x1,y1)-(x2,y2)の距離
+function distToSeg(px, py, x1, y1, x2, y2) {
+  const dx = x2 - x1, dy = y2 - y1;
+  const l2 = dx * dx + dy * dy;
+  let t = l2 ? ((px - x1) * dx + (py - y1) * dy) / l2 : 0;
+  t = Math.max(0, Math.min(1, t));
+  return Math.hypot(px - (x1 + t * dx), py - (y1 + t * dy));
+}
+let dragLineIdx = -1;
+let dragLastX = 0, dragLastY = 0;
 let pickRaf = false;
-function applyPick(e) {
+function pickCoords(e) {
   const it = items[cur];
-  if (!it || !it.posePts || it.poseUsed !== 'back') return;
   const rect = video.getBoundingClientRect();
-  const sx = Math.round((e.clientX - rect.left) / rect.width * it.vw);
-  const sy = Math.round((e.clientY - rect.top) / rect.height * it.vh);
-  it.ballManual = [sx, sy];
-  if (pickRaf) return;
-  pickRaf = true;
-  requestAnimationFrame(() => {
-    pickRaf = false;
-    it.lines = computeGuideLinesJS('back', it.posePts, null, it.vw, it.vh, it.ballManual);
-    it.linesKey = `${it.start.toFixed(2)}|${it.view}|${it.ballManual}`;
-    drawOverlayLines(it);
-  });
+  const vw = (it && it.vw) || video.videoWidth || rect.width;
+  const vh = (it && it.vh) || video.videoHeight || rect.height;
+  return [(e.clientX - rect.left) / rect.width * vw,
+          (e.clientY - rect.top) / rect.height * vh];
 }
 $('pickLayer').addEventListener('pointerdown', (e) => {
   if (e.target.id === 'pickDone') return;
   e.preventDefault();
-  pickDragging = true;
+  const it = items[cur];
+  if (!it || !it.lines || !it.lines.length) return;
+  const [sx, sy] = pickCoords(e);
+  // 触った位置に最も近い線を選ぶ
+  let best = -1, bestD = Infinity;
+  it.lines.forEach((ln, i) => {
+    const d = distToSeg(sx, sy, ln[0], ln[1], ln[2], ln[3]);
+    if (d < bestD) { bestD = d; best = i; }
+  });
+  dragLineIdx = best;
+  dragLastX = sx; dragLastY = sy;
   try { $('pickLayer').setPointerCapture(e.pointerId); } catch (err) {}
-  applyPick(e);
 });
 $('pickLayer').addEventListener('pointermove', (e) => {
-  if (pickDragging) { e.preventDefault(); applyPick(e); }
+  if (dragLineIdx < 0) return;
+  e.preventDefault();
+  const it = items[cur];
+  if (!it || !it.lines) return;
+  const [sx, sy] = pickCoords(e);
+  const ddx = sx - dragLastX, ddy = sy - dragLastY;
+  dragLastX = sx; dragLastY = sy;
+  const ln = it.lines[dragLineIdx];
+  ln[0] += ddx; ln[1] += ddy; ln[2] += ddx; ln[3] += ddy; // 線を平行移動
+  it.linesEdited = true; // 自動再計算で上書きしない
+  if (pickRaf) return;
+  pickRaf = true;
+  requestAnimationFrame(() => { pickRaf = false; drawOverlayLines(it); });
 });
-$('pickLayer').addEventListener('pointerup', () => { pickDragging = false; });
-$('pickLayer').addEventListener('pointercancel', () => { pickDragging = false; });
+function endDrag() { dragLineIdx = -1; }
+$('pickLayer').addEventListener('pointerup', endDrag);
+$('pickLayer').addEventListener('pointercancel', endDrag);
 $('pickDone').addEventListener('click', (e) => {
   e.stopPropagation();
-  pickDragging = false;
+  dragLineIdx = -1;
   $('pickLayer').classList.add('hidden');
   video.setAttribute('controls', ''); // 動画のコントロールを元に戻す
   saveSession();
-  setStatus('✅ ボール位置を設定しました(プレビューや書き出しにも反映されます)', 'ok');
+  setStatus('✅ 線の位置を調整しました(プレビューや書き出しにも反映されます)', 'ok');
 });
 
 // ---------------- 範囲設定・候補・プレビュー ----------------
@@ -974,7 +994,7 @@ $('detect').onclick = async () => {
   const it = items[cur];
   if (!it) return;
   it.cellDiffs = null;
-  it.linesKey = '';
+  it.linesKey = ''; it.linesEdited = false;
   await analyzeItem(it);
 };
 $('nextCand').onclick = () => {
@@ -982,7 +1002,7 @@ $('nextCand').onclick = () => {
   if (!it || it.candidates.length < 2) return;
   it.candIndex = (it.candIndex + 1) % it.candidates.length;
   const c = it.candidates[it.candIndex];
-  it.start = c.start; it.end = c.end; it.linesKey = '';
+  it.start = c.start; it.end = c.end; it.linesKey = ''; it.linesEdited = false;
   refreshTimes(); renderQueue(); saveSession();
   video.currentTime = it.start;
   setStatus(`✅ 候補${it.candIndex + 1}/${it.candidates.length}: ` +
@@ -991,7 +1011,7 @@ $('nextCand').onclick = () => {
 $('setStart').onclick = () => {
   const it = items[cur];
   if (!it) return;
-  it.start = video.currentTime; it.linesKey = '';
+  it.start = video.currentTime; it.linesKey = ''; it.linesEdited = false;
   refreshTimes(); renderQueue(); saveSession();
 };
 $('setEnd').onclick = () => {
@@ -1007,7 +1027,7 @@ document.querySelectorAll('[data-adj]').forEach(btn => {
     const d = parseFloat(btn.dataset.d);
     if (btn.dataset.adj === 'start' && it.start != null) {
       it.start = Math.max(0, it.start + d);
-      it.linesKey = '';
+      it.linesKey = ''; it.linesEdited = false;
       video.currentTime = it.start;
     }
     if (btn.dataset.adj === 'end' && it.end != null) {
