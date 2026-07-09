@@ -924,6 +924,8 @@ $('pickBall').onclick = async () => {
     setStatus('ℹ この動画は「正面」と判定されているため、線は鼻の位置の縦線のままです(ボール位置は使いません)。後方の3本線にしたい場合は、一覧のプルダウンで「線: 後方」を選んでからもう一度お試しください', 'ok');
     return;
   }
+  // 指定中は動画の再生ボタン・シークバー等を隠してタップしやすくする
+  video.removeAttribute('controls');
   $('pickLayer').classList.remove('hidden');
   setStatus('ボールをタップ、または指でドラッグすると線が付いてきます。位置が決まったら「✓ 完了」を押してください', 'ok');
 };
@@ -962,6 +964,7 @@ $('pickDone').addEventListener('click', (e) => {
   e.stopPropagation();
   pickDragging = false;
   $('pickLayer').classList.add('hidden');
+  video.setAttribute('controls', ''); // 動画のコントロールを元に戻す
   saveSession();
   setStatus('✅ ボール位置を設定しました(プレビューや書き出しにも反映されます)', 'ok');
 });
@@ -1258,7 +1261,16 @@ $('export').onclick = async () => {
     recorder.stop();
     await stopped;
     const ext = mime.startsWith('video/mp4') ? 'mp4' : 'webm';
-    const blob = new Blob(chunks, { type: mime.split(';')[0] });
+    let blob = new Blob(chunks, { type: mime.split(';')[0] });
+    // MediaRecorderのMP4はフラグメント形式で長さ情報が壊れており、
+    // 編集アプリ(Filmora等)で3秒しか読めない。標準の平坦MP4に組み直す
+    if (ext === 'mp4' && window.remuxToFlatMP4) {
+      setStatus('<span class="spinner"></span>編集アプリで使える形式に変換しています…(最後の仕上げ)');
+      try {
+        const fixed = await remuxToFlatMP4(blob);
+        if (fixed && fixed.size > 0) blob = fixed;
+      } catch (e) { /* 変換失敗時は元のまま保存(再生は可能) */ }
+    }
     const url = URL.createObjectURL(blob);
     const stamp = new Date().toISOString().replace(/[-:T]/g, '').slice(0, 14);
     const name = `スイング連結_${stamp}.${ext}`;
