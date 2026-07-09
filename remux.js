@@ -59,7 +59,8 @@
     for (const s of samples) parts.push(b32(s.size));
     return fullbox('stsz', 0, 0, ...parts);
   }
-  function stsc() { return fullbox('stsc', 0, 0, b32(1), b32(1), b32(1), b32(1)); }
+  // 全サンプルを1チャンクにまとめるので、そのチャンクのサンプル数を書く
+  function stsc(sampleCount) { return fullbox('stsc', 0, 0, b32(1), b32(1), b32(sampleCount), b32(1)); }
   function stco(offset) { return fullbox('stco', 0, 0, b32(1), b32(offset)); }
   function stss(samples) {
     const nums = [];
@@ -88,7 +89,7 @@
     const tables = [tr.stsd, stts(tr.samples)];
     const c = ctts(tr.samples); if (c) tables.push(c);
     const ss = isVideo ? stss(tr.samples) : null; if (ss) tables.push(ss);
-    tables.push(stsc(), stsz(tr.samples), stco(tr.chunkOffset));
+    tables.push(stsc(tr.samples.length), stsz(tr.samples), stco(tr.chunkOffset));
     const stbl = box('stbl', ...tables);
     const minf = box('minf', media, dinf2(), stbl);
     const mdia = box('mdia', mdhd, hdlr, minf);
@@ -99,49 +100,48 @@
     return blob.arrayBuffer().then(ab => new Promise((resolve, reject) => {
       const inFile = MP4Box.createFile();
       const tracks = {};
-      let nbTracks = 0, doneTracks = 0;
       inFile.onError = e => reject(new Error('parse: ' + e));
       inFile.onReady = (info) => {
-        try {
-          nbTracks = info.tracks.length;
-          info.tracks.forEach(t => {
-            const trak0 = inFile.getTrackById(t.id);
-            const entry = trak0.mdia.minf.stbl.stsd.entries[0];
-            const s = new DataStream(undefined, 0, DataStream.BIG_ENDIAN);
-            entry.write(s);
-            const stsdInner = new Uint8Array(s.buffer); // エントリ全体(ヘッダ込み)
-            const stsd = fullbox('stsd', 0, 0, b32(1), stsdInner);
-            tracks[t.id] = {
-              id: t.id, timescale: t.timescale,
-              type: t.video ? 'video' : (t.audio ? 'audio' : 'other'),
-              width: t.video ? t.video.width : 0,
-              height: t.video ? t.video.height : 0,
-              stsd, samples: []
-            };
-            inFile.setExtractionOptions(t.id, null, { nbSamples: 1e9 });
-          });
-          inFile.onSamples = (id, user, samples) => {
-            const tr = tracks[id];
-            for (const s of samples) {
-              const data = s.data instanceof Uint8Array ? s.data : new Uint8Array(s.data);
-              tr.samples.push({
-                data, size: data.length, duration: s.duration,
-                dts: s.dts, cts: s.cts,
-                is_sync: s.is_sync === undefined ? true : s.is_sync
-              });
-            }
-            doneTracks++;
-            if (doneTracks >= nbTracks) {
-              try { resolve(assemble(tracks)); }
-              catch (e) { reject(e); }
-            }
+        info.tracks.forEach(t => {
+          const trak0 = inFile.getTrackById(t.id);
+          const entry = trak0.mdia.minf.stbl.stsd.entries[0];
+          const s = new DataStream(undefined, 0, DataStream.BIG_ENDIAN);
+          entry.write(s);
+          const stsdInner = new Uint8Array(s.buffer); // エントリ全体(ヘッダ込み)
+          const stsd = fullbox('stsd', 0, 0, b32(1), stsdInner);
+          tracks[t.id] = {
+            id: t.id, timescale: t.timescale,
+            type: t.video ? 'video' : (t.audio ? 'audio' : 'other'),
+            width: t.video ? t.video.width : 0,
+            height: t.video ? t.video.height : 0,
+            stsd, samples: []
           };
-          inFile.start();
-        } catch (e) { reject(e); }
+          // 全サンプルを一括で受け取る(フラグメントMP4はmoovのnb_samplesが
+          // 0なので、その数値には頼らずflush完了後にまとめて組み立てる)
+          inFile.setExtractionOptions(t.id, null, { nbSamples: 1e9 });
+        });
+        inFile.onSamples = (id, user, samples) => {
+          const tr = tracks[id];
+          for (const s of samples) {
+            const data = s.data instanceof Uint8Array ? s.data : new Uint8Array(s.data);
+            tr.samples.push({
+              data, size: data.length, duration: s.duration,
+              dts: s.dts, cts: s.cts,
+              is_sync: s.is_sync === undefined ? true : s.is_sync
+            });
+          }
+        };
+        inFile.start();
       };
+      // ファイル全体を渡してflush。この時点で全サンプルがonSamplesで
+      // 届いているので、そのあとに組み立てる
       ab.fileStart = 0;
       inFile.appendBuffer(ab);
       inFile.flush();
+      try {
+        if (!Object.keys(tracks).length) throw new Error('トラックを読めませんでした');
+        resolve(assemble(tracks));
+      } catch (e) { reject(e); }
     }));
   };
 
