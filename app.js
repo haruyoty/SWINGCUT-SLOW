@@ -920,11 +920,12 @@ $('pickBall').onclick = async () => {
     setStatus('⚠ 線を計算できませんでした(人物を検出できない可能性があります)', 'err');
     return;
   }
+  showHandles = true;
   drawOverlayLines(it);
   // 指定中は動画の再生ボタン・シークバー等を隠して線をつかみやすくする
   video.removeAttribute('controls');
   $('pickLayer').classList.remove('hidden');
-  setStatus('動かしたい線をドラッグしてください(線は1本ずつ動きます)。決まったら「✓ 完了」を押してください', 'ok');
+  setStatus('線の真ん中をドラッグ=平行移動、白い丸(両端)をドラッグ=角度を変更。決まったら「✓ 完了」を押してください', 'ok');
 };
 
 // 点(px,py)と線分(x1,y1)-(x2,y2)の距離
@@ -936,6 +937,7 @@ function distToSeg(px, py, x1, y1, x2, y2) {
   return Math.hypot(px - (x1 + t * dx), py - (y1 + t * dy));
 }
 let dragLineIdx = -1;
+let dragMode = 'move'; // 'p1'(始点)/'p2'(終点)=角度変更、'move'=平行移動
 let dragLastX = 0, dragLastY = 0;
 let pickRaf = false;
 function pickCoords(e) {
@@ -959,6 +961,14 @@ $('pickLayer').addEventListener('pointerdown', (e) => {
     if (d < bestD) { bestD = d; best = i; }
   });
   dragLineIdx = best;
+  // 掴んだのが端(白丸)か真ん中かを判定する。端なら角度変更、中央なら移動
+  const L = it.lines[best];
+  const grab = Math.min(it.vw, it.vh) * 0.10; // 端をつかむ許容半径
+  const d1 = Math.hypot(sx - L[0], sy - L[1]);
+  const d2 = Math.hypot(sx - L[2], sy - L[3]);
+  if (d1 <= grab && d1 <= d2) dragMode = 'p1';
+  else if (d2 <= grab) dragMode = 'p2';
+  else dragMode = 'move';
   dragLastX = sx; dragLastY = sy;
   try { $('pickLayer').setPointerCapture(e.pointerId); } catch (err) {}
 });
@@ -968,10 +978,14 @@ $('pickLayer').addEventListener('pointermove', (e) => {
   const it = items[cur];
   if (!it || !it.lines) return;
   const [sx, sy] = pickCoords(e);
-  const ddx = sx - dragLastX, ddy = sy - dragLastY;
-  dragLastX = sx; dragLastY = sy;
   const ln = it.lines[dragLineIdx];
-  ln[0] += ddx; ln[1] += ddy; ln[2] += ddx; ln[3] += ddy; // 線を平行移動
+  if (dragMode === 'p1') { ln[0] = sx; ln[1] = sy; }          // 始点だけ動かす=角度変更
+  else if (dragMode === 'p2') { ln[2] = sx; ln[3] = sy; }     // 終点だけ動かす=角度変更
+  else {                                                       // 真ん中=平行移動
+    const ddx = sx - dragLastX, ddy = sy - dragLastY;
+    ln[0] += ddx; ln[1] += ddy; ln[2] += ddx; ln[3] += ddy;
+  }
+  dragLastX = sx; dragLastY = sy;
   it.linesEdited = true; // 自動再計算で上書きしない
   if (pickRaf) return;
   pickRaf = true;
@@ -983,10 +997,13 @@ $('pickLayer').addEventListener('pointercancel', endDrag);
 $('pickDone').addEventListener('click', (e) => {
   e.stopPropagation();
   dragLineIdx = -1;
+  showHandles = false; // つまみを消す(書き出しには含めない)
+  const it = items[cur];
+  if (it) drawOverlayLines(it);
   $('pickLayer').classList.add('hidden');
   video.setAttribute('controls', ''); // 動画のコントロールを元に戻す
   saveSession();
-  setStatus('✅ 線の位置を調整しました(プレビューや書き出しにも反映されます)', 'ok');
+  setStatus('✅ 線を調整しました(プレビューや書き出しにも反映されます)', 'ok');
 });
 
 // ---------------- 範囲設定・候補・プレビュー ----------------
@@ -1101,20 +1118,37 @@ function hideBadge() { $('badge').classList.add('hidden'); }
 function clearOverlay() {
   overlayCanvas.getContext('2d').clearRect(0, 0, overlayCanvas.width, overlayCanvas.height);
 }
+let showHandles = false; // 線編集中に端の「つまみ」を表示するか
 function drawOverlayLines(it) {
   overlayCanvas.width = it.vw;
   overlayCanvas.height = it.vh;
   const ctx = overlayCanvas.getContext('2d');
   ctx.clearRect(0, 0, it.vw, it.vh);
   if (!it.lines) return;
+  const lw = Math.max(3, it.vh / 220);
   ctx.strokeStyle = '#ff2d2d';
-  ctx.lineWidth = Math.max(3, it.vh / 220);
+  ctx.lineWidth = lw;
   ctx.lineCap = 'round';
   for (const [x1, y1, x2, y2] of it.lines) {
     ctx.beginPath();
     ctx.moveTo(x1, y1);
     ctx.lineTo(x2, y2);
     ctx.stroke();
+  }
+  if (showHandles) {
+    // 各線の両端に白丸のつまみ(ここをドラッグすると角度が変わる)
+    const r = lw * 3;
+    ctx.lineWidth = Math.max(2, lw * 0.6);
+    for (const [x1, y1, x2, y2] of it.lines) {
+      for (const [hx, hy] of [[x1, y1], [x2, y2]]) {
+        ctx.beginPath();
+        ctx.arc(hx, hy, r, 0, Math.PI * 2);
+        ctx.fillStyle = 'rgba(255,255,255,0.9)';
+        ctx.fill();
+        ctx.strokeStyle = '#ff2d2d';
+        ctx.stroke();
+      }
+    }
   }
 }
 
