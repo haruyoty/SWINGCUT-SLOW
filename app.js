@@ -961,6 +961,7 @@ $('pickLayer').addEventListener('pointerdown', (e) => {
     if (d < bestD) { bestD = d; best = i; }
   });
   dragLineIdx = best;
+  activeLineIdx = best; // つかんだ線を色替え表示
   // 掴んだのが端(白丸)か真ん中かを判定する。端なら角度変更、中央なら移動
   const L = it.lines[best];
   const grab = Math.min(it.vw, it.vh) * 0.10; // 端をつかむ許容半径
@@ -970,6 +971,7 @@ $('pickLayer').addEventListener('pointerdown', (e) => {
   else if (d2 <= grab) dragMode = 'p2';
   else dragMode = 'move';
   dragLastX = sx; dragLastY = sy;
+  drawOverlayLines(it); // 色替えを即反映
   try { $('pickLayer').setPointerCapture(e.pointerId); } catch (err) {}
 });
 $('pickLayer').addEventListener('pointermove', (e) => {
@@ -997,6 +999,7 @@ $('pickLayer').addEventListener('pointercancel', endDrag);
 $('pickDone').addEventListener('click', (e) => {
   e.stopPropagation();
   dragLineIdx = -1;
+  activeLineIdx = -1;  // 色替えを解除(すべて赤に戻す)
   showHandles = false; // つまみを消す(書き出しには含めない)
   const it = items[cur];
   if (it) drawOverlayLines(it);
@@ -1119,6 +1122,7 @@ function clearOverlay() {
   overlayCanvas.getContext('2d').clearRect(0, 0, overlayCanvas.width, overlayCanvas.height);
 }
 let showHandles = false; // 線編集中に端の「つまみ」を表示するか
+let activeLineIdx = -1;  // 今つかんでいる線(色を変えて示す)
 function drawOverlayLines(it) {
   overlayCanvas.width = it.vw;
   overlayCanvas.height = it.vh;
@@ -1126,15 +1130,16 @@ function drawOverlayLines(it) {
   ctx.clearRect(0, 0, it.vw, it.vh);
   if (!it.lines) return;
   const lw = Math.max(3, it.vh / 220);
-  ctx.strokeStyle = '#ff2d2d';
   ctx.lineWidth = lw;
   ctx.lineCap = 'round';
-  for (const [x1, y1, x2, y2] of it.lines) {
+  it.lines.forEach(([x1, y1, x2, y2], i) => {
+    // 編集中につかんでいる線だけ黄色、それ以外は赤で描く
+    ctx.strokeStyle = (showHandles && i === activeLineIdx) ? '#ffd400' : '#ff2d2d';
     ctx.beginPath();
     ctx.moveTo(x1, y1);
     ctx.lineTo(x2, y2);
     ctx.stroke();
-  }
+  });
   if (showHandles) {
     // 各線の両端に白丸のつまみ(ここをドラッグすると角度が変わる)
     const r = lw * 3;
