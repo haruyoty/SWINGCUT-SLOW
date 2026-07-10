@@ -478,9 +478,9 @@ function detectSwing(diffs, fps, impacts, total) {
       miss = sm[i] < thr ? miss + 1 : 0;
     }
     const ei = i - miss;
-    // インパクト(peak)から最低1.8秒前を開始点として保証する。威力の強い
-    // スイングだとバックスイングが範囲から外れトップから始まるのを防ぐ
-    let start = Math.max(0, Math.min(si / fps - 0.8, peak / fps - 1.8));
+    // インパクト(peak)から最低2.5秒前を開始点として保証する。威力の強い/
+    // バックスイングの遅いスイングでトップから始まるのを防ぐ
+    let start = Math.max(0, Math.min(si / fps - 0.8, peak / fps - 2.5));
     let end = Math.min(total, ei / fps + 0.8);
     if (end - start < 1.5) {
       start = Math.max(0, peak / fps - 2.0);
