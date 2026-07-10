@@ -615,12 +615,18 @@ function zoomRect(it, start, end, tw, th) {
   let bh = (Math.max(...ys) + 1) * 10 * ky - by;
   const sw = it.vw, sh = it.vh;
   if (bh >= 0.55 * sh) return null; // もともと大きく映っている
-  const mx = bw * 0.18, my = bh * 0.18;
-  bx = Math.max(0, bx - mx); by = Math.max(0, by - my);
+  // スイングの動き領域は腕・クラブが中心で、頭(上)と足(下)がはみ出す。
+  // 頭・足まで確実に入れるため上下の余白を大きく取る(特に頭側を厚く)
+  const mx = bw * 0.25;
+  const topM = bh * 0.55, botM = bh * 0.40;
+  bx = Math.max(0, bx - mx);
+  const by0 = Math.max(0, by - topM);
   bw = Math.min(sw - bx, bw + 2 * mx);
-  bh = Math.min(sh - by, bh + 2 * my);
+  bh = Math.min(sh - by0, bh + topM + botM);
+  by = by0;
   const aspect = tw / th;
-  let ch = Math.max(bh, bw / aspect, sh / 3.0);
+  // 最大ズームは2倍まで(切れ防止。以前は3倍で拡大しすぎだった)
+  let ch = Math.max(bh, bw / aspect, sh / 2.0);
   ch = Math.min(ch, sh);
   let cw = Math.min(ch * aspect, sw);
   ch = Math.min(ch, cw / aspect);
