@@ -530,9 +530,10 @@ function detectSwing(diffs, fps, impacts, total) {
     rest = [...scored, ...fbScored.filter(s => s !== primary)]
       .sort((a, b) => b.score - a.score);
   } else {
-    const top = scored.filter(s => s.score >= regBest * 0.65 && s.ql >= 2.0);
-    primary = top.length ? top.reduce((a, b) => a.i <= b.i ? a : b)
-      : scored.reduce((a, b) => a.score >= b.score ? a : b);
+    // スコア最高の山(=インパクト)を本命にする。以前は「上位のうち最も
+    // 早い山」だったが、同じスイングのバックスイングの山を拾って
+    // ダウンスイング途中で切れることがあったため変更
+    primary = scored.reduce((a, b) => a.score >= b.score ? a : b);
     rest = [...scored.filter(s => s.i !== primary.i), ...fbScored]
       .sort((a, b) => b.score - a.score);
   }
