@@ -472,8 +472,10 @@ function detectSwing(diffs, fps, impacts, total) {
       miss = sm[i] < thr ? miss + 1 : 0;
     }
     const si = i + miss;
+    // フィニッシュ到達はインパクト後1.5秒程度。それ以降の動き(クラブを
+    // 下ろす・歩き出す)を含めないよう前方への拡張は1.7秒で打ち切る
     i = peak; miss = 0;
-    while (i < n - 1 && miss <= gap && i - peak < fps * 2.0) {
+    while (i < n - 1 && miss <= gap && i - peak < fps * 1.7) {
       i += 1;
       miss = sm[i] < thr ? miss + 1 : 0;
     }
@@ -481,7 +483,7 @@ function detectSwing(diffs, fps, impacts, total) {
     // インパクト(peak)から最低2.5秒前を開始点として保証する。威力の強い/
     // バックスイングの遅いスイングでトップから始まるのを防ぐ
     let start = Math.max(0, Math.min(si / fps - 0.8, peak / fps - 2.5));
-    let end = Math.min(total, ei / fps + 0.8);
+    let end = Math.min(total, ei / fps + 0.25); // フィニッシュ後はすぐカット
     if (end - start < 1.5) {
       start = Math.max(0, peak / fps - 2.0);
       end = Math.min(total, peak / fps + 1.5);
