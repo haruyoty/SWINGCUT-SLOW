@@ -165,7 +165,8 @@ function saveSession() {
         ballManual: it.ballManual, lines: it.lines, linesKey: it.linesKey,
         linesEdited: it.linesEdited || false,
         posePts: it.posePts || null, poseUsed: it.poseUsed || null,
-        viewUsed: it.viewUsed || null
+        viewUsed: it.viewUsed || null,
+        comments: it.comments || []
       }));
       const db = await dbOpen();
       const tx = db.transaction('session', 'readwrite');
@@ -206,9 +207,9 @@ async function restoreSession() {
 }
 
 // ---------------- タイトル画面(オープニング) ----------------
-// 冒頭に画像+テキストを5秒間表示する。使うかどうかはチェックボックスで選択
+// 冒頭に画像+テキストを4秒間表示する。使うかどうかはチェックボックスで選択
 let introImage = null; // 選択された画像ファイル
-const INTRO_SEC = 5;
+const INTRO_SEC = 4;
 function introEnabled() {
   return $('introOn').checked && (introImage || $('introText').value.trim());
 }
@@ -301,6 +302,7 @@ function addFiles(fileList) {
       start: null, end: null,
       view: 'auto', lines: null, linesKey: '',
       ballManual: null,
+      comments: [],
       status: '待機中'
     });
   }
@@ -370,6 +372,7 @@ function select(i, force) {
   refreshTimes();
   $('nextCand').classList.toggle('hidden', it.candidates.length <= 1);
   renderQueue();
+  renderComments();
   if (it.start != null) video.currentTime = it.start;
 }
 function refreshTimes() {
@@ -965,6 +968,105 @@ async function ensureLines(it) {
   }
 }
 
+// ---------------- 場面コメント ----------------
+// シークバーで場面を選び「コメント追加」→ スロー再生でその場面が
+// 4秒間の停止映像になり、コメントが人物と重ならない側に表示される
+const COMMENT_SEC = 4;
+$('addComment').onclick = () => {
+  const it = items[cur];
+  if (!it) { setStatus('先に動画を読み込んでください', 'err'); return; }
+  if (it.start == null || it.end == null) { setStatus('先にスイング区間を設定してください', 'err'); return; }
+  stopPreview();
+  video.pause();
+  const t = video.currentTime;
+  if (t < it.start - 0.05 || t > it.end + 0.05) {
+    setStatus('シークバーでスイング区間内(' + fmtShort(it.start) + '〜' + fmtShort(it.end) + ')のコメントしたい場面に移動してから押してください', 'err');
+    return;
+  }
+  $('commentText').value = '';
+  $('commentDlgTime').textContent = '(' + fmtShort(t) + 'の場面)';
+  $('commentDialog').classList.remove('hidden');
+  $('commentText').focus();
+};
+$('commentCancel').onclick = () => $('commentDialog').classList.add('hidden');
+$('commentSave').onclick = () => {
+  const it = items[cur];
+  const text = $('commentText').value.trim();
+  $('commentDialog').classList.add('hidden');
+  if (!it || !text) return;
+  (it.comments = it.comments || []).push({ t: video.currentTime, text });
+  it.comments.sort((a, b) => a.t - b.t);
+  renderComments();
+  saveSession();
+  setStatus('✅ コメントを追加しました。完成動画とプレビューのスロー再生で、この場面が' + COMMENT_SEC + '秒止まって表示されます', 'ok');
+};
+function renderComments() {
+  const box = $('commentList');
+  box.innerHTML = '';
+  const it = items[cur];
+  if (!it || !it.comments || !it.comments.length) return;
+  it.comments.forEach((c, i) => {
+    const row = document.createElement('div');
+    row.className = 'qrow';
+    row.style.padding = '6px 12px';
+    const icon = document.createElement('span'); icon.textContent = '💬';
+    const time = document.createElement('span'); time.className = 'qrange'; time.textContent = fmtShort(c.t);
+    const txt = document.createElement('span'); txt.className = 'qname'; txt.textContent = c.text;
+    const del = document.createElement('button'); del.className = 'qdel'; del.textContent = '✕'; del.title = 'このコメントを削除';
+    del.onclick = (e) => { e.stopPropagation(); it.comments.splice(i, 1); renderComments(); saveSession(); };
+    row.onclick = () => { stopPreview(); video.pause(); video.currentTime = c.t; };
+    row.append(icon, time, txt, del);
+    box.appendChild(row);
+  });
+}
+// コメントの吹き出しを描く。W/H=描画先サイズ、mapPt=元動画座標→描画先座標
+// の変換(書き出しのズーム用、プレビューではnull)
+function drawCommentBox(ctx2, it, text, W, H, mapPt) {
+  // 人物の中心X(姿勢データの肩・腰から)。無ければ中央とみなす
+  let px = W / 2;
+  if (it.posePts) {
+    let sx = 0;
+    for (const i of [11, 12, 23, 24]) sx += it.posePts[i][0];
+    px = sx / 4;
+    if (mapPt) px = mapPt([px, 0])[0];
+  }
+  const side = px >= W / 2 ? 'left' : 'right'; // 人物がいない側に置く
+  const boxW = W * 0.42;
+  const x0 = side === 'left' ? W * 0.04 : W - W * 0.04 - boxW;
+  const fsC = Math.max(13, Math.round(H * 0.048));
+  ctx2.save();
+  ctx2.font = 'bold ' + fsC + 'px sans-serif';
+  // 幅に収まるよう文字単位で折り返す
+  const maxW = boxW - fsC;
+  const lines = [];
+  for (const para of String(text).split('\n')) {
+    let curLine = '';
+    for (const ch of para) {
+      if (curLine && ctx2.measureText(curLine + ch).width > maxW) { lines.push(curLine); curLine = ch; }
+      else curLine += ch;
+    }
+    lines.push(curLine);
+  }
+  const lh = fsC * 1.35;
+  const boxH = lines.length * lh + fsC * 0.9;
+  const y0 = Math.max(H * 0.05, Math.min(H * 0.42 - boxH / 2, H - boxH - H * 0.05));
+  ctx2.globalAlpha = 0.62;
+  ctx2.fillStyle = '#000';
+  ctx2.beginPath();
+  const r = fsC * 0.45;
+  if (ctx2.roundRect) ctx2.roundRect(x0, y0, boxW, boxH, r);
+  else ctx2.rect(x0, y0, boxW, boxH);
+  ctx2.fill();
+  ctx2.globalAlpha = 1;
+  ctx2.fillStyle = '#fff';
+  ctx2.textAlign = 'left';
+  ctx2.textBaseline = 'middle';
+  lines.forEach((L, i) => {
+    if (L) ctx2.fillText(L, x0 + fsC * 0.5, y0 + fsC * 0.45 + lh * i + lh / 2);
+  });
+  ctx2.restore();
+}
+
 // ---------------- 線の即時確認 ----------------
 // 書き出しやプレビューを待たず、アドレスの画面に線を重ねて確認する
 $('showLines').onclick = async () => {
@@ -1162,12 +1264,17 @@ $('preview').onclick = async () => {
   video.play();
 };
 let phaseSwitching = false; // スロー切り替え中のシークによるpauseを無視する
+let previewCmts = [];       // スローでこれから止まる場面
+let commentHold = 0;        // コメント停止中の識別トークン(0=停止していない)
 function advancePreviewPhase() {
   const it = items[cur];
   if (!it) return;
   if (previewPhase === 1) {
     previewPhase = 2;
     phaseSwitching = true;
+    previewCmts = (it.comments || [])
+      .filter(c => c.t >= it.start && c.t <= it.end)
+      .sort((a, b) => a.t - b.t);
     const rate = parseFloat($('speed').value);
     video.currentTime = it.start;
     showBadge($('speed').value + '倍速');
@@ -1188,9 +1295,29 @@ video.addEventListener('timeupdate', () => {
   // 切り替えの巻き戻しが終わる前に届いたイベントは無視する。
   // スマホでは巻き戻し完了前にcurrentTimeが古いままのイベントが届き、
   // 「スローも終わった」と誤判定してプレビューが打ち切られていた
-  if (phaseSwitching || video.seeking) return;
+  if (phaseSwitching || video.seeking || commentHold) return;
   const it = items[cur];
   if (!it) return;
+  // スロー再生中にコメントの場面へ来たら4秒止めて表示する
+  if (previewPhase === 2 && previewCmts.length && video.currentTime >= previewCmts[0].t) {
+    const c = previewCmts.shift();
+    const token = commentHold = Date.now();
+    video.pause();
+    drawOverlayLines(items[cur]);
+    drawCommentBox(overlayCanvas.getContext('2d'), it, c.text, overlayCanvas.width, overlayCanvas.height, null);
+    setTimeout(() => {
+      if (commentHold !== token) return; // その間に停止・再操作されていたら何もしない
+      commentHold = 0;
+      if (!previewPhase) return;
+      clearOverlay();
+      drawOverlayLines(items[cur]);
+      const p = video.play();
+      (p || Promise.resolve()).then(() => {
+        video.playbackRate = parseFloat($('speed').value);
+      }).catch(() => {});
+    }, COMMENT_SEC * 1000);
+    return;
+  }
   if (video.currentTime >= it.end) advancePreviewPhase();
 });
 // 終了位置が動画の末尾と同じ場合、再生が末尾で止まると currentTime が
@@ -1199,19 +1326,21 @@ video.addEventListener('timeupdate', () => {
 // ただし ended はスロー切り替え(巻き戻し)後に遅れて届くことがあるため、
 // 再生位置が本当に終了位置付近にある時だけ進める
 video.addEventListener('ended', () => {
-  if (!previewPhase || phaseSwitching || video.seeking) return;
+  if (!previewPhase || phaseSwitching || video.seeking || commentHold) return;
   const it = items[cur];
   if (!it || video.currentTime < it.end - 0.1) return;
   advancePreviewPhase();
 });
 video.addEventListener('pause', () => {
-  // 切り替えの巻き戻し中に届いた古いpauseは無視(誤って停止しない)
-  if (phaseSwitching || video.seeking) return;
+  // 切り替えの巻き戻し中・コメント停止中に届いたpauseは無視
+  if (phaseSwitching || video.seeking || commentHold) return;
   const it = items[cur];
   if (previewPhase && it && video.currentTime < it.end - 0.05) stopPreview();
 });
 function stopPreview() {
   previewPhase = 0;
+  previewCmts = [];
+  commentHold = 0;
   video.pause();
   video.playbackRate = 1;
   hideBadge();
@@ -1376,7 +1505,8 @@ $('export').onclick = async () => {
 
     const introSec = introEnabled() ? INTRO_SEC : 0;
     const totalSec = introSec +
-      items.reduce((s, it) => s + (it.end - it.start) * (1 + 1 / speed), 0);
+      items.reduce((s, it) => s + (it.end - it.start) * (1 + 1 / speed) +
+        (it.comments || []).filter(c => c.t >= it.start && c.t <= it.end).length * COMMENT_SEC, 0);
     let doneSec = 0;
 
     // 書き出し用のvideoは1つを使い回す。スマホは同時に使える動画
@@ -1516,12 +1646,43 @@ $('export').onclick = async () => {
       const mapLine = ([x1, y1, x2, y2]) =>
         [(x1 - cx) * s + ox, (y1 - cy) * s + oy, (x2 - cx) * s + ox, (y2 - cy) * s + oy];
 
-      const playPass = (rate, lines, label) => new Promise((resolve, reject) => {
+      const playPass = (rate, lines, label, freezes) => new Promise((resolve, reject) => {
         const segDur = it.end - it.start;
+        const pend = freezes ? freezes.slice() : []; // これから止まる場面(昇順)
+        let freezeCmt = null, freezeUntil = 0;
+        const mapPt = ([x, y]) => [(x - cx) * s + ox, (y - cy) * s + oy];
+        const drawFrame = () => {
+          ctx.fillStyle = '#000';
+          ctx.fillRect(0, 0, tw, th);
+          ctx.drawImage(ev, cx, cy, cw, chh, ox, oy, cw * s, chh * s);
+          if (lines) {
+            ctx.strokeStyle = '#ff2d2d';
+            ctx.lineWidth = Math.max(3, th / 220);
+            ctx.lineCap = 'round';
+            for (const ln of lines) {
+              const [a, b, c, d] = mapLine(ln);
+              ctx.beginPath(); ctx.moveTo(a, b); ctx.lineTo(c, d); ctx.stroke();
+            }
+          }
+        };
         seekTo(ev, it.start).then(() => {
           ev.playbackRate = rate;
           let started = false;
           const draw = () => {
+            if (freezeCmt) {
+              // コメント付きの停止映像(映像は止めたまま同じ画面を描き続ける)
+              drawFrame();
+              drawCommentBox(ctx, it, freezeCmt.text, tw, th, mapPt);
+              setStatus(`<span class="spinner"></span>書き出し中 (${idx + 1}/${items.length}本目・コメント表示)… 画面を閉じないでください`);
+              if (performance.now() >= freezeUntil) {
+                freezeCmt = null;
+                doneSec += COMMENT_SEC;
+                ev.play().then(() => requestAnimationFrame(draw)).catch(reject);
+                return;
+              }
+              requestAnimationFrame(draw);
+              return;
+            }
             if (ev.currentTime >= it.end || ev.ended) {
               ev.pause();
               // 注意: ここで録画を一時停止してはいけない。iPhoneのSafariは
@@ -1533,19 +1694,15 @@ $('export').onclick = async () => {
             }
             if (!started) {
               started = true;
-              if (recorder.state === 'inactive') recorder.start(500);
+              if (recorder.state === 'inactive') recorder.start(300);
             }
-            ctx.fillStyle = '#000';
-            ctx.fillRect(0, 0, tw, th);
-            ctx.drawImage(ev, cx, cy, cw, chh, ox, oy, cw * s, chh * s);
-            if (lines) {
-              ctx.strokeStyle = '#ff2d2d';
-              ctx.lineWidth = Math.max(3, th / 220);
-              ctx.lineCap = 'round';
-              for (const ln of lines) {
-                const [a, b, c, d] = mapLine(ln);
-                ctx.beginPath(); ctx.moveTo(a, b); ctx.lineTo(c, d); ctx.stroke();
-              }
+            drawFrame();
+            if (pend.length && ev.currentTime >= pend[0].t) {
+              freezeCmt = pend.shift();
+              freezeUntil = performance.now() + COMMENT_SEC * 1000;
+              ev.pause();
+              requestAnimationFrame(draw);
+              return;
             }
             const prog = (doneSec + Math.max(0, ev.currentTime - it.start) / rate) / totalSec;
             $('pfill').style.width = Math.min(100, prog * 100).toFixed(1) + '%';
@@ -1556,8 +1713,11 @@ $('export').onclick = async () => {
         });
       });
 
+      const cmts = (it.comments || [])
+        .filter(c => c.t >= it.start && c.t <= it.end)
+        .sort((a, b) => a.t - b.t);
       await playPass(1, null, '通常速度');
-      await playPass(speed, it.lines, 'スロー');
+      await playPass(speed, it.lines, 'スロー', cmts);
     }
     exportSrcNode.disconnect();
     exportVideo.removeAttribute('src');

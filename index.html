@@ -99,6 +99,21 @@
     padding: 12px 28px; border-radius: 8px; font-size: 16px;
     text-decoration: none; margin-top: 8px;
   }
+  #commentDialog {
+    position: fixed; inset: 0; z-index: 50;
+    background: rgba(0,0,0,.6);
+    display: flex; align-items: center; justify-content: center;
+  }
+  #commentDialog.hidden { display: none; }
+  #commentDialog .box {
+    background: #232a3a; border-radius: 12px; padding: 18px;
+    width: min(90vw, 440px);
+  }
+  #commentDialog textarea {
+    width: 100%; background: #33405c; color: #e8ecf3; border: none;
+    border-radius: 8px; padding: 10px; font-size: 15px;
+    font-family: inherit; resize: vertical;
+  }
   @media (max-width: 640px) {
     body { padding: 12px; }
     h1 { font-size: 18px; }
@@ -114,7 +129,7 @@
 </head>
 <body>
 <div class="app">
-  <h1>⛳ スイング動画編集ツール <span style="font-size:12px;color:#93a0b5">v41</span></h1>
+  <h1>⛳ スイング動画編集ツール <span style="font-size:12px;color:#93a0b5">v43</span></h1>
   <div class="sub">ゴルフスイングを自動検出し、「通常速度 → スロー再生(ガイド線付き)」の動画を作成します。複数の動画は1本に連結されます。動画はどこにも送信されず、すべてこの端末の中で処理されます。</div>
 
   <label class="drop" id="drop">
@@ -145,8 +160,10 @@
         <button id="nextCand" class="hidden">↪ 別の候補を試す</button>
         <button id="showLines">📏 線を今すぐ表示</button>
         <button id="pickBall">✏️ 線を動かす</button>
-        <span class="hint">「線を今すぐ表示」で線を確認できます。ズレていたら「線を動かす」で、各線を1本ずつドラッグして調整できます</span>
+        <button id="addComment">💬 コメント追加</button>
+        <span class="hint">「線を今すぐ表示」で線を確認できます。ズレていたら「線を動かす」で調整。「コメント追加」は、シークバーでコメントしたい場面に移動してから押すと、その場面が完成動画のスロー再生で4秒止まりコメントが表示されます</span>
       </div>
+      <div id="commentList"></div>
       <div class="row">
         <span class="label">スイング開始</span>
         <span class="time" id="startTime">--:--.--</span>
@@ -192,7 +209,7 @@
         <span class="label">タイトル画面</span>
         <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
           <input type="checkbox" id="introOn" style="width:18px;height:18px">
-          <span class="hint">動画の冒頭に画像とテキストを5秒間表示</span>
+          <span class="hint">動画の冒頭に画像とテキストを4秒間表示</span>
         </label>
       </div>
       <div class="row hidden" id="introRow">
@@ -233,8 +250,18 @@
     </div>
   </div>
 </div>
+<div id="commentDialog" class="hidden">
+  <div class="box">
+    <div style="margin-bottom:10px;color:#ffd76e">💬 この場面へのコメント <span class="hint" id="commentDlgTime"></span></div>
+    <textarea id="commentText" rows="3" placeholder="例: ここで左足に体重が乗っているのでGOOD!"></textarea>
+    <div style="display:flex;gap:10px;justify-content:flex-end;margin-top:12px">
+      <button id="commentCancel">キャンセル</button>
+      <button class="primary" id="commentSave" style="font-size:14px;padding:9px 20px">追加する</button>
+    </div>
+  </div>
+</div>
 <script src="lib/mp4box.all.min.js"></script>
-<script src="remux.js?v=41"></script>
-<script type="module" src="app.js?v=41"></script>
+<script src="remux.js?v=43"></script>
+<script type="module" src="app.js?v=43"></script>
 </body>
 </html>
