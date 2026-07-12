@@ -205,6 +205,79 @@ async function restoreSession() {
   } catch (e) { /* 復元失敗時は普通に空の状態で開始 */ }
 }
 
+// ---------------- タイトル画面(オープニング) ----------------
+// 冒頭に画像+テキストを5秒間表示する。使うかどうかはチェックボックスで選択
+let introImage = null; // 選択された画像ファイル
+const INTRO_SEC = 5;
+function introEnabled() {
+  return $('introOn').checked && (introImage || $('introText').value.trim());
+}
+let introSaveTimer = null;
+function saveIntro() {
+  clearTimeout(introSaveTimer);
+  introSaveTimer = setTimeout(async () => {
+    try {
+      const db = await dbOpen();
+      const tx = db.transaction('session', 'readwrite');
+      tx.objectStore('session').put({
+        on: $('introOn').checked,
+        text: $('introText').value,
+        color: $('introColor').value,
+        anim: $('introAnim').value,
+        outline: $('introOutline').checked,
+        outlineColor: $('introOutlineColor').value,
+        image: introImage
+      }, 'intro');
+      await new Promise((res, rej) => { tx.oncomplete = res; tx.onerror = () => rej(tx.error); });
+      db.close();
+    } catch (e) { /* 保存失敗は動作に影響しない */ }
+  }, 600);
+}
+function setIntroImage(f) {
+  introImage = f || null;
+  const t = $('introThumb');
+  if (introImage) {
+    t.src = URL.createObjectURL(introImage);
+    t.classList.remove('hidden');
+    $('introPick').textContent = '🖼 画像を変更';
+  } else {
+    t.classList.add('hidden');
+    $('introPick').textContent = '🖼 画像を選択';
+  }
+}
+$('introOn').addEventListener('change', () => {
+  $('introRow').classList.toggle('hidden', !$('introOn').checked);
+  saveIntro();
+});
+$('introPick').onclick = () => $('introFile').click();
+$('introFile').addEventListener('change', e => {
+  if (e.target.files.length) { setIntroImage(e.target.files[0]); saveIntro(); }
+  e.target.value = '';
+});
+$('introText').addEventListener('input', saveIntro);
+$('introColor').addEventListener('input', saveIntro);
+$('introAnim').addEventListener('change', saveIntro);
+$('introOutline').addEventListener('change', saveIntro);
+$('introOutlineColor').addEventListener('input', saveIntro);
+async function restoreIntro() {
+  try {
+    const db = await dbOpen();
+    const tx = db.transaction('session', 'readonly');
+    const req = tx.objectStore('session').get('intro');
+    const d = await new Promise((res, rej) => { req.onsuccess = () => res(req.result); req.onerror = () => rej(req.error); });
+    db.close();
+    if (!d) return;
+    $('introOn').checked = !!d.on;
+    $('introRow').classList.toggle('hidden', !d.on);
+    $('introText').value = d.text || '';
+    $('introColor').value = d.color || '#ffffff';
+    $('introAnim').value = d.anim || 'fade';
+    $('introOutline').checked = !!d.outline;
+    $('introOutlineColor').value = d.outlineColor || '#000000';
+    if (d.image) setIntroImage(d.image);
+  } catch (e) { /* 復元失敗時は初期状態で開始 */ }
+}
+
 // ---------------- ファイル読み込み ----------------
 const drop = $('drop');
 drop.addEventListener('dragover', e => { e.preventDefault(); drop.classList.add('over'); });
@@ -483,7 +556,9 @@ function detectSwing(diffs, fps, impacts, total) {
     // インパクト(peak)から最低2.5秒前を開始点として保証する。威力の強い/
     // バックスイングの遅いスイングでトップから始まるのを防ぐ
     let start = Math.max(0, Math.min(si / fps - 0.8, peak / fps - 2.5));
-    let end = Math.min(total, ei / fps + 0.25); // フィニッシュ後はすぐカット
+    // 終了もインパクトの1.4秒後までは必ず含める(フィニッシュの動作分)。
+    // 拡張が早く止まるとインパクト直後で切れてしまうため
+    let end = Math.min(total, Math.max(ei / fps + 0.25, peak / fps + 1.4));
     if (end - start < 1.5) {
       start = Math.max(0, peak / fps - 2.0);
       end = Math.min(total, peak / fps + 1.5);
@@ -1232,6 +1307,7 @@ $('export').onclick = async () => {
   $('pbar').classList.remove('hidden');
   stopPreview();
   let wakeLock = null;
+  let keepaliveTimer = null;
   try { wakeLock = await navigator.wakeLock?.request('screen'); } catch (e) {}
   try {
     const ac = getAudioCtx();
@@ -1265,7 +1341,22 @@ $('export').onclick = async () => {
     const stopped = new Promise(res => { recorder.onstop = res; });
     // 録画開始は最初のフレーム描画時まで遅らせる(冒頭の黒画面を防ぐ)
 
-    const totalSec = items.reduce((s, it) => s + (it.end - it.start) * (1 + 1 / speed), 0);
+    // 動画の読み込み・シーク中は画面が描き変わらず、その間のコマが動画に
+    // 入らない。コマの無い区間があると編集アプリ(KineMaster等)で
+    // ストップフレームが押せない・黒く表示されるため、録画中は常に
+    // 一定間隔でコマを送り続ける(直前の画面がそのまま静止表示される)
+    const vTrack = stream.getVideoTracks()[0];
+    keepaliveTimer = setInterval(() => {
+      try {
+        if (recorder.state !== 'recording') return;
+        if (vTrack.requestFrame) vTrack.requestFrame();
+        else ctx.drawImage(cvs, 0, 0); // requestFrame非対応ブラウザ向け
+      } catch (e) { /* 停止直後のrace等は無視 */ }
+    }, 100);
+
+    const introSec = introEnabled() ? INTRO_SEC : 0;
+    const totalSec = introSec +
+      items.reduce((s, it) => s + (it.end - it.start) * (1 + 1 / speed), 0);
     let doneSec = 0;
 
     // 書き出し用のvideoは1つを使い回す。スマホは同時に使える動画
@@ -1278,6 +1369,102 @@ $('export').onclick = async () => {
     }
     exportSrcNode.disconnect();
     exportSrcNode.connect(recDest); // スピーカーには出さず録音のみ
+
+    if (introSec) {
+      // タイトル画面: 画像を黒背景に収まるよう配置し、テキストを中央に重ねる
+      setStatus('<span class="spinner"></span>タイトル画面を書き出し中…');
+      let img = null;
+      if (introImage) {
+        img = await new Promise(res => {
+          const im = new Image();
+          im.onload = () => res(im);
+          im.onerror = () => res(null); // 読めない画像は黒背景+文字のみで続行
+          im.src = URL.createObjectURL(introImage);
+        });
+      }
+      // 改行で複数行に分ける(空行はそのまま行間として残す)
+      const lines = $('introText').value.replace(/\s+$/, '').split('\n');
+      const hasText = lines.some(l => l.trim());
+      const color = $('introColor').value || '#ffffff';
+      const anim = $('introAnim').value || 'none';
+      const outline = $('introOutline').checked;
+      const outlineColor = $('introOutlineColor').value || '#000000';
+      // 文字サイズ: 一番長い行が幅に収まり、全行が高さの75%に収まるまで縮める
+      let fs = Math.round(th * 0.10);
+      if (hasText) {
+        const fits = () => {
+          ctx.font = 'bold ' + fs + 'px sans-serif';
+          return lines.every(L => ctx.measureText(L).width <= tw * 0.92) &&
+            lines.length * fs * 1.3 <= th * 0.75;
+        };
+        while (fs > 12 && !fits()) fs -= 2;
+      }
+      const totalChars = lines.join('').length;
+      // 録画エンコーダの起動には時間がかかり、開始直後の映像は動画に
+      // 入らないことがある。アニメーションが丸ごと欠けないよう、録画が
+      // 実際に始まってから350msの静止フレームを挟み、そのあとで
+      // アニメーションの時計を始める
+      let t0 = Infinity;
+      const startClock = () => { if (t0 === Infinity) t0 = performance.now() + 350; };
+      await new Promise(resolve => {
+        const draw = () => {
+          if (recorder.state === 'inactive') {
+            recorder.onstart = startClock;
+            recorder.start(500);
+            setTimeout(startClock, 1500); // onstartが来ない環境向けの保険
+          }
+          const el = Math.max(0, (performance.now() - t0) / 1000);
+          const e = 1 - Math.pow(1 - Math.min(1, el / 0.8), 3); // 0.8秒かけてスッと現れる
+          ctx.fillStyle = '#000';
+          ctx.fillRect(0, 0, tw, th);
+          ctx.save();
+          if (anim === 'fade') ctx.globalAlpha = e;
+          else if (anim === 'zoom') {
+            ctx.globalAlpha = e;
+            const k = 0.75 + 0.25 * e;
+            ctx.translate(tw / 2, th / 2); ctx.scale(k, k); ctx.translate(-tw / 2, -th / 2);
+          } else if (anim === 'slide') {
+            ctx.globalAlpha = e;
+            ctx.translate(0, th * 0.22 * (1 - e));
+          }
+          if (img) {
+            const s2 = Math.min(tw / img.naturalWidth, th / img.naturalHeight);
+            const w = img.naturalWidth * s2, h = img.naturalHeight * s2;
+            ctx.drawImage(img, (tw - w) / 2, (th - h) / 2, w, h);
+          }
+          if (hasText) {
+            ctx.font = 'bold ' + fs + 'px sans-serif';
+            const lh = fs * 1.3;
+            const y0 = th / 2 - lh * (lines.length - 1) / 2;
+            ctx.textBaseline = 'middle';
+            ctx.fillStyle = color;
+            // 「1文字ずつ表示」は1.4秒かけて左から順に出す(位置は固定)
+            let budget = anim === 'type'
+              ? Math.ceil(totalChars * Math.min(1, el / 1.4)) : Infinity;
+            ctx.textAlign = 'left';
+            if (outline) {
+              ctx.strokeStyle = outlineColor;
+              ctx.lineWidth = Math.max(2, fs * 0.14);
+              ctx.lineJoin = 'round';
+            }
+            lines.forEach((L, i) => {
+              const shown = budget === Infinity ? L : L.slice(0, Math.max(0, budget));
+              if (budget !== Infinity) budget -= L.length;
+              if (!shown) return;
+              const x = tw / 2 - ctx.measureText(L).width / 2, y = y0 + i * lh;
+              if (outline) ctx.strokeText(shown, x, y); // 縁取りは文字の下に描く
+              ctx.fillText(shown, x, y);
+            });
+            ctx.textBaseline = 'alphabetic';
+          }
+          ctx.restore();
+          $('pfill').style.width = Math.min(100, Math.min(el, introSec) / totalSec * 100).toFixed(1) + '%';
+          if (el >= introSec) { doneSec += introSec; return resolve(); }
+          requestAnimationFrame(draw);
+        };
+        requestAnimationFrame(draw);
+      });
+    }
 
     for (let idx = 0; idx < items.length; idx++) {
       const it = items[idx];
@@ -1355,6 +1542,7 @@ $('export').onclick = async () => {
     exportSrcNode.disconnect();
     exportVideo.removeAttribute('src');
     exportVideo.load();
+    clearInterval(keepaliveTimer);
     recorder.stop();
     await stopped;
     const ext = mime.startsWith('video/mp4') ? 'mp4' : 'webm';
@@ -1385,6 +1573,7 @@ $('export').onclick = async () => {
     setStatus('❌ 書き出しに失敗しました: ' + e.message, 'err');
   } finally {
     exporting = false;
+    clearInterval(keepaliveTimer);
     $('export').disabled = false;
     $('pbar').classList.add('hidden');
     try { wakeLock?.release(); } catch (e) {}
@@ -1404,6 +1593,7 @@ if (location.protocol === 'file:') {
   setStatus('⚠ このページはWebサーバー経由で開く必要があります(GitHub Pages等)', 'err');
 }
 restoreSession();
+restoreIntro();
 
 // 開発検証用フック
 window.DEBUG_FN = { loadInto, seekTo, seekFrame, waitMeta };
