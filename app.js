@@ -1352,7 +1352,12 @@ $('export').onclick = async () => {
       audioBitsPerSecond: 128_000
     });
     const chunks = [];
-    recorder.ondataavailable = e => { if (e.data.size) chunks.push(e.data); };
+    let onFirstData = null; // 最初の録画データが出たら呼ぶ(エンコード開始の確実な合図)
+    recorder.ondataavailable = e => {
+      if (!e.data.size) return;
+      chunks.push(e.data);
+      if (onFirstData) { onFirstData(); onFirstData = null; }
+    };
     const stopped = new Promise(res => { recorder.onstop = res; });
     // 録画開始は最初のフレーム描画時まで遅らせる(冒頭の黒画面を防ぐ)
 
@@ -1416,17 +1421,17 @@ $('export').onclick = async () => {
       }
       const totalChars = lines.join('').length;
       // 録画エンコーダの起動には時間がかかり、開始直後の映像は動画に
-      // 入らないことがある。アニメーションが丸ごと欠けないよう、録画が
-      // 実際に始まってから350msの静止フレームを挟み、そのあとで
-      // アニメーションの時計を始める
+      // 入らないことがある(アニメーションが丸ごと欠ける原因)。
+      // 「最初の録画データが実際に出てきた」のを確認し、さらに200msの
+      // 静止フレームを挟んでからアニメーションの時計を始める
       let t0 = Infinity;
-      const startClock = () => { if (t0 === Infinity) t0 = performance.now() + 350; };
+      const startClock = () => { if (t0 === Infinity) t0 = performance.now() + 200; };
       await new Promise(resolve => {
         const draw = () => {
           if (recorder.state === 'inactive') {
-            recorder.onstart = startClock;
-            recorder.start(500);
-            setTimeout(startClock, 1500); // onstartが来ない環境向けの保険
+            onFirstData = startClock;
+            recorder.start(300); // 300msごとにデータを受け取る
+            setTimeout(startClock, 2500); // データが来ない環境向けの保険
           }
           const el = Math.max(0, (performance.now() - t0) / 1000);
           const e = 1 - Math.pow(1 - Math.min(1, el / 0.8), 3); // 0.8秒かけてスッと現れる
