@@ -1162,6 +1162,27 @@ $('preview').onclick = async () => {
   video.play();
 };
 let phaseSwitching = false; // スロー切り替え中のシークによるpauseを無視する
+function advancePreviewPhase() {
+  const it = items[cur];
+  if (!it) return;
+  if (previewPhase === 1) {
+    previewPhase = 2;
+    phaseSwitching = true;
+    const rate = parseFloat($('speed').value);
+    video.currentTime = it.start;
+    showBadge($('speed').value + '倍速');
+    drawOverlayLines(it);
+    // スマホではシークで再生が止まることがあるため明示的に再開する。
+    // playbackRateはplay後にもう一度設定(リセットする端末がある)
+    const p = video.play();
+    (p || Promise.resolve()).then(() => {
+      video.playbackRate = rate;
+      phaseSwitching = false;
+    }).catch(() => { phaseSwitching = false; });
+  } else {
+    stopPreview();
+  }
+}
 video.addEventListener('timeupdate', () => {
   if (!previewPhase) return;
   // 切り替えの巻き戻しが終わる前に届いたイベントは無視する。
@@ -1170,28 +1191,22 @@ video.addEventListener('timeupdate', () => {
   if (phaseSwitching || video.seeking) return;
   const it = items[cur];
   if (!it) return;
-  if (video.currentTime >= it.end) {
-    if (previewPhase === 1) {
-      previewPhase = 2;
-      phaseSwitching = true;
-      const rate = parseFloat($('speed').value);
-      video.currentTime = it.start;
-      showBadge($('speed').value + '倍速');
-      drawOverlayLines(it);
-      // スマホではシークで再生が止まることがあるため明示的に再開する。
-      // playbackRateはplay後にもう一度設定(リセットする端末がある)
-      const p = video.play();
-      (p || Promise.resolve()).then(() => {
-        video.playbackRate = rate;
-        phaseSwitching = false;
-      }).catch(() => { phaseSwitching = false; });
-    } else {
-      stopPreview();
-    }
-  }
+  if (video.currentTime >= it.end) advancePreviewPhase();
+});
+// 終了位置が動画の末尾と同じ場合、再生が末尾で止まると currentTime が
+// it.end にわずかに届かず timeupdate では切り替わらないことがある。
+// 「再生し終わった」イベントでも確実に次のフェーズへ進める。
+// ただし ended はスロー切り替え(巻き戻し)後に遅れて届くことがあるため、
+// 再生位置が本当に終了位置付近にある時だけ進める
+video.addEventListener('ended', () => {
+  if (!previewPhase || phaseSwitching || video.seeking) return;
+  const it = items[cur];
+  if (!it || video.currentTime < it.end - 0.1) return;
+  advancePreviewPhase();
 });
 video.addEventListener('pause', () => {
-  if (phaseSwitching) return;
+  // 切り替えの巻き戻し中に届いた古いpauseは無視(誤って停止しない)
+  if (phaseSwitching || video.seeking) return;
   const it = items[cur];
   if (previewPhase && it && video.currentTime < it.end - 0.05) stopPreview();
 });
