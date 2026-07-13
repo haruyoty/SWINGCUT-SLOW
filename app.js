@@ -968,6 +968,89 @@ async function ensureLines(it) {
   }
 }
 
+// ---------------- BGM(著作権フリー音楽) ----------------
+// Mixkit License(商用利用可・クレジット不要)の音源を同梱。
+// 完成動画に元の音声と重ねてミックスする(音量は控えめ)
+const BGM_FILES = {
+  bgm1: 'audio/bgm1.mp3', bgm2: 'audio/bgm2.mp3', bgm3: 'audio/bgm3.mp3',
+  bgm4: 'audio/bgm4.mp3', bgm5: 'audio/bgm5.mp3'
+};
+const BGM_VOLUME = 0.25; // 元の音声を邪魔しない音量
+let bgmAudition = null;
+let bgmCustomFile = null; // 「自分の曲を選ぶ」で読み込んだ音楽ファイル
+function bgmSourceUrl() {
+  const k = $('bgm').value;
+  if (k === 'custom') return bgmCustomFile ? URL.createObjectURL(bgmCustomFile) : null;
+  return BGM_FILES[k] || null;
+}
+function stopAudition() {
+  if (bgmAudition) { bgmAudition.pause(); bgmAudition = null; }
+  $('bgmPlay').textContent = '🔊 試聴';
+}
+$('bgmPlay').addEventListener('click', () => {
+  if (bgmAudition) { stopAudition(); return; }
+  const url = bgmSourceUrl();
+  if (!url) { setStatus('BGMを選んでから試聴を押してください', 'err'); return; }
+  bgmAudition = new Audio(url);
+  bgmAudition.volume = 0.6;
+  bgmAudition.play().catch(() => {
+    stopAudition();
+    setStatus('⚠ この音楽ファイルは再生できない形式のようです', 'err');
+  });
+  bgmAudition.onended = stopAudition;
+  $('bgmPlay').textContent = '⏹ 停止';
+});
+$('bgm').addEventListener('change', () => {
+  stopAudition();
+  try { localStorage.setItem('bgm', $('bgm').value); } catch (e) {}
+});
+try { $('bgm').value = localStorage.getItem('bgm') || ''; } catch (e) {}
+// 自分の曲: 選ぶとプルダウンに「🎵 ファイル名」が追加され、次回も使える
+function setBgmCustom(file, select) {
+  bgmCustomFile = file || null;
+  let opt = $('bgm').querySelector('option[value="custom"]');
+  if (!bgmCustomFile) { if (opt) opt.remove(); return; }
+  if (!opt) {
+    opt = document.createElement('option');
+    opt.value = 'custom';
+    $('bgm').appendChild(opt);
+  }
+  opt.textContent = '🎵 ' + bgmCustomFile.name;
+  if (select) {
+    $('bgm').value = 'custom';
+    try { localStorage.setItem('bgm', 'custom'); } catch (e) {}
+  }
+}
+$('bgmFileBtn').addEventListener('click', () => $('bgmFile').click());
+$('bgmFile').addEventListener('change', async e => {
+  if (!e.target.files.length) return;
+  stopAudition();
+  setBgmCustom(e.target.files[0], true);
+  e.target.value = '';
+  setStatus('✅ 音楽を取り込みました。「🔊 試聴」で確認できます(著作権のある曲の扱いにはご注意ください)', 'ok');
+  try {
+    const db = await dbOpen();
+    const tx = db.transaction('session', 'readwrite');
+    tx.objectStore('session').put(bgmCustomFile, 'bgmFile');
+    await new Promise((res, rej) => { tx.oncomplete = res; tx.onerror = () => rej(tx.error); });
+    db.close();
+  } catch (err) { /* 保存できなくても今回の書き出しには使える */ }
+});
+async function restoreBgmCustom() {
+  try {
+    const db = await dbOpen();
+    const tx = db.transaction('session', 'readonly');
+    const req = tx.objectStore('session').get('bgmFile');
+    const f = await new Promise((res, rej) => { req.onsuccess = () => res(req.result); req.onerror = () => rej(req.error); });
+    db.close();
+    if (f) {
+      setBgmCustom(f, false);
+      // 前回「自分の曲」を選んでいた場合は選択も復元
+      if (localStorage.getItem('bgm') === 'custom') $('bgm').value = 'custom';
+    }
+  } catch (e) { /* 復元失敗時は同梱曲のみ */ }
+}
+
 // ---------------- 場面コメント ----------------
 // シークバーで場面を選び「コメント追加」→ スロー再生でその場面が
 // 4秒間の停止映像になり、コメントが人物と重ならない側に表示される
@@ -1087,7 +1170,7 @@ $('showLines').onclick = async () => {
     return;
   }
   drawOverlayLines(it);
-  setStatus('✅ 線を表示しています(' + (it.viewUsed || '') + ')。ズレている場合は「🎯 ボール位置を指定」でボールをタップしてください', 'ok');
+  setStatus('✅ 線を表示しています(' + (it.viewUsed || '') + ')', 'ok');
 };
 
 // ---------------- ボール位置の手動指定 ----------------
@@ -1095,25 +1178,31 @@ $('showLines').onclick = async () => {
 // スマホでは動画プレーヤーへのタップが再生コントロールに吸収されて
 // ツールに届かないため、専用のタップ受け取りレイヤーを動画の上にかぶせる。
 // 触った位置に一番近い線をつかんで、その線だけを平行移動する。
-$('pickBall').onclick = async () => {
+async function openLineEditor() {
   const it = items[cur];
-  if (!it) { setStatus('先に動画を読み込んでください', 'err'); return; }
-  if (it.start == null) { setStatus('先にスイング区間を設定してください', 'err'); return; }
+  if (!it) { setStatus('先に動画を読み込んでください', 'err'); return false; }
+  if (it.start == null) { setStatus('先にスイング区間を設定してください', 'err'); return false; }
   stopPreview();
   video.pause();
   video.currentTime = Math.min(it.start + 0.2, video.duration || it.start);
   setStatus('<span class="spinner"></span>線を計算しています…');
   await ensureLines(it);
-  if (!it.lines || !it.lines.length) {
-    setStatus('⚠ 線を計算できませんでした(人物を検出できない可能性があります)', 'err');
-    return;
-  }
+  // 自動の線が計算できなくても、「+ 線を追加」で自分の線は引ける
+  if (!it.lines) it.lines = [];
   showHandles = true;
   drawOverlayLines(it);
   // 指定中は動画の再生ボタン・シークバー等を隠して線をつかみやすくする
   video.removeAttribute('controls');
   $('pickLayer').classList.remove('hidden');
-  setStatus('線の真ん中をドラッグ=平行移動、白い丸(両端)をドラッグ=角度を変更。決まったら「✓ 完了」を押してください', 'ok');
+  setStatus(it.lines.length
+    ? '線の真ん中をドラッグ=平行移動、白い丸(両端)をドラッグ=角度を変更。「+ 線を追加」で好きな線も引けます。決まったら「✓ 完了」'
+    : '自動の線はありません。「+ 線を追加」で好きな場所に線を引けます', 'ok');
+  return true;
+}
+$('pickBall').onclick = () => openLineEditor();
+// メイン画面の「➕ 線を追加」: 調整画面を開いてすぐ1本追加する
+$('addLineBtn').onclick = async () => {
+  if (await openLineEditor()) $('pickAdd').click();
 };
 
 // 点(px,py)と線分(x1,y1)-(x2,y2)の距離
@@ -1137,7 +1226,7 @@ function pickCoords(e) {
           (e.clientY - rect.top) / rect.height * vh];
 }
 $('pickLayer').addEventListener('pointerdown', (e) => {
-  if (e.target.id === 'pickDone') return;
+  if (e.target.id === 'pickDone' || e.target.id === 'pickAdd' || e.target.id === 'pickDel') return;
   e.preventDefault();
   const it = items[cur];
   if (!it || !it.lines || !it.lines.length) return;
@@ -1184,6 +1273,42 @@ $('pickLayer').addEventListener('pointermove', (e) => {
 function endDrag() { dragLineIdx = -1; }
 $('pickLayer').addEventListener('pointerup', endDrag);
 $('pickLayer').addEventListener('pointercancel', endDrag);
+// 好きな場所に自分の線を追加する。追加した線は自動の線と同じように
+// ドラッグで調整でき、スロー再生・書き出しにも表示される
+$('pickAdd').addEventListener('click', (e) => {
+  e.stopPropagation();
+  const it = items[cur];
+  if (!it) return;
+  if (!it.lines) it.lines = [];
+  const w = it.vw || video.videoWidth || 1280;
+  const h = it.vh || video.videoHeight || 720;
+  const L = Math.min(w, h) * 0.28;
+  // 中央付近に斜めの線。連続で追加しても重ならないよう少しずつずらす
+  const off = (it.lines.length % 5) * Math.min(w, h) * 0.05;
+  it.lines.push([w / 2 - L + off, h / 2 + L * 0.6 + off,
+                 w / 2 + L + off, h / 2 - L * 0.6 + off]);
+  it.linesEdited = true; // 自動再計算で消されないように
+  activeLineIdx = it.lines.length - 1; // 追加した線を黄色で表示
+  dragLineIdx = -1;
+  drawOverlayLines(it);
+  saveSession();
+  setStatus('線を追加しました(黄色の線)。真ん中をドラッグで移動、白い丸で角度・長さを変えられます', 'ok');
+});
+$('pickDel').addEventListener('click', (e) => {
+  e.stopPropagation();
+  const it = items[cur];
+  if (!it || !it.lines || activeLineIdx < 0 || activeLineIdx >= it.lines.length) {
+    setStatus('削除したい線を先にタップして(黄色にして)から押してください', 'err');
+    return;
+  }
+  it.lines.splice(activeLineIdx, 1);
+  it.linesEdited = true;
+  activeLineIdx = -1;
+  dragLineIdx = -1;
+  drawOverlayLines(it);
+  saveSession();
+  setStatus('線を削除しました', 'ok');
+});
 $('pickDone').addEventListener('click', (e) => {
   e.stopPropagation();
   dragLineIdx = -1;
@@ -1449,6 +1574,8 @@ $('export').onclick = async () => {
   $('result').innerHTML = '';
   $('pbar').classList.remove('hidden');
   stopPreview();
+  stopAudition();
+  let bgmSrc = null;
   let wakeLock = null;
   let keepaliveTimer = null;
   try { wakeLock = await navigator.wakeLock?.request('screen'); } catch (e) {}
@@ -1479,6 +1606,27 @@ $('export').onclick = async () => {
       videoBitsPerSecond: 12_000_000,
       audioBitsPerSecond: 128_000
     });
+
+    // BGM: 選ばれていれば読み込んで録音先にミックス(ループ再生)。
+    // 読み込みに失敗しても書き出し自体は音楽なしで続行する
+    const bgmKey = $('bgm').value;
+    if ((bgmKey && BGM_FILES[bgmKey]) || (bgmKey === 'custom' && bgmCustomFile)) {
+      try {
+        setStatus('<span class="spinner"></span>音楽を読み込んでいます…');
+        const ab = bgmKey === 'custom'
+          ? await bgmCustomFile.arrayBuffer()
+          : await (await fetch(BGM_FILES[bgmKey])).arrayBuffer();
+        const buf = await ac.decodeAudioData(ab);
+        bgmSrc = ac.createBufferSource();
+        bgmSrc.buffer = buf;
+        bgmSrc.loop = true;
+        const g = ac.createGain();
+        g.gain.value = BGM_VOLUME;
+        bgmSrc.connect(g);
+        g.connect(recDest);
+        bgmSrc.start();
+      } catch (e) { bgmSrc = null; }
+    }
     const chunks = [];
     let onFirstData = null; // 最初の録画データが出たら呼ぶ(エンコード開始の確実な合図)
     recorder.ondataavailable = e => {
@@ -1753,6 +1901,7 @@ $('export').onclick = async () => {
   } finally {
     exporting = false;
     clearInterval(keepaliveTimer);
+    try { if (bgmSrc) { bgmSrc.stop(); bgmSrc.disconnect(); } } catch (e) {}
     $('export').disabled = false;
     $('pbar').classList.add('hidden');
     try { wakeLock?.release(); } catch (e) {}
@@ -1810,6 +1959,7 @@ if (location.protocol === 'file:') {
 }
 restoreSession();
 restoreIntro();
+restoreBgmCustom();
 
 // 開発検証用フック
 window.DEBUG_FN = { loadInto, seekTo, seekFrame, waitMeta };
