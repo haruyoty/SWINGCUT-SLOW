@@ -143,7 +143,7 @@
 </head>
 <body>
 <div class="app">
-  <h1>⛳ スイング動画編集ツール <span style="font-size:12px;color:#93a0b5">v48</span></h1>
+  <h1>⛳ スイング動画編集ツール <span style="font-size:12px;color:#93a0b5">v49</span></h1>
   <div class="sub">ゴルフスイングを自動検出し、「通常速度 → スロー再生(ガイド線付き)」の動画を作成します。複数の動画は1本に連結されます。動画はどこにも送信されず、すべてこの端末の中で処理されます。</div>
 
   <label class="drop" id="drop">
@@ -168,10 +168,12 @@
         <div style="position:absolute;top:56px;left:50%;transform:translateX(-50%);background:rgba(0,0,0,.75);color:#ffd76e;padding:8px 16px;border-radius:8px;font-size:14px;white-space:nowrap">✏️ 線をドラッグで調整/「+ 線を追加」で自由に線を引けます</div>
         <button id="pickDone"
                 style="position:absolute;top:8px;right:8px;background:#2f7d4f;color:#fff;border:none;border-radius:8px;padding:7px 14px;font-size:14px;font-family:inherit;opacity:0.9">✓ 完了</button>
-        <button id="pickAdd"
-                style="position:absolute;top:8px;left:8px;background:#3a5e9e;color:#fff;border:none;border-radius:8px;padding:7px 14px;font-size:14px;font-family:inherit;opacity:0.9">+ 線を追加</button>
-        <button id="pickDel"
-                style="position:absolute;bottom:12px;right:8px;background:#8a3a3a;color:#fff;border:none;border-radius:8px;padding:7px 14px;font-size:14px;font-family:inherit;opacity:0.9">🗑 選んだ線を削除</button>
+        <div style="position:absolute;top:8px;left:8px;display:flex;gap:8px">
+          <button id="pickAdd"
+                  style="background:#3a5e9e;color:#fff;border:none;border-radius:8px;padding:7px 14px;font-size:14px;font-family:inherit;opacity:0.9">+ 線を追加</button>
+          <button id="pickDel"
+                  style="background:#8a3a3a;color:#fff;border:none;border-radius:8px;padding:7px 14px;font-size:14px;font-family:inherit;opacity:0.9">🗑 選んだ線を削除</button>
+        </div>
       </div>
     </div>
 
@@ -311,7 +313,7 @@
   </div>
 </div>
 <script src="lib/mp4box.all.min.js"></script>
-<script src="remux.js?v=48"></script>
-<script type="module" src="app.js?v=48"></script>
+<script src="remux.js?v=49"></script>
+<script type="module" src="app.js?v=49"></script>
 </body>
 </html>
