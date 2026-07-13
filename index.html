@@ -143,7 +143,7 @@
 </head>
 <body>
 <div class="app">
-  <h1>⛳ スイング動画編集ツール <span style="font-size:12px;color:#93a0b5">v44</span></h1>
+  <h1>⛳ スイング動画編集ツール <span style="font-size:12px;color:#93a0b5">v48</span></h1>
   <div class="sub">ゴルフスイングを自動検出し、「通常速度 → スロー再生(ガイド線付き)」の動画を作成します。複数の動画は1本に連結されます。動画はどこにも送信されず、すべてこの端末の中で処理されます。</div>
 
   <label class="drop" id="drop">
@@ -165,9 +165,13 @@
               style="position:absolute;left:10px;bottom:12px;z-index:4;width:44px;height:44px;border-radius:50%;border:none;background:rgba(0,0,0,.55);color:#fff;font-size:18px;cursor:pointer;display:flex;align-items:center;justify-content:center">▶</button>
       <div id="pickLayer" class="hidden"
            style="position:absolute;inset:0;z-index:5;cursor:crosshair;background:rgba(20,40,80,0.12);touch-action:none">
-        <div style="position:absolute;top:10px;left:50%;transform:translateX(-50%);background:rgba(0,0,0,.75);color:#ffd76e;padding:8px 16px;border-radius:8px;font-size:14px;white-space:nowrap">✏️ 動かしたい線をドラッグ(1本ずつ動きます)</div>
+        <div style="position:absolute;top:56px;left:50%;transform:translateX(-50%);background:rgba(0,0,0,.75);color:#ffd76e;padding:8px 16px;border-radius:8px;font-size:14px;white-space:nowrap">✏️ 線をドラッグで調整/「+ 線を追加」で自由に線を引けます</div>
         <button id="pickDone"
                 style="position:absolute;top:8px;right:8px;background:#2f7d4f;color:#fff;border:none;border-radius:8px;padding:7px 14px;font-size:14px;font-family:inherit;opacity:0.9">✓ 完了</button>
+        <button id="pickAdd"
+                style="position:absolute;top:8px;left:8px;background:#3a5e9e;color:#fff;border:none;border-radius:8px;padding:7px 14px;font-size:14px;font-family:inherit;opacity:0.9">+ 線を追加</button>
+        <button id="pickDel"
+                style="position:absolute;bottom:12px;right:8px;background:#8a3a3a;color:#fff;border:none;border-radius:8px;padding:7px 14px;font-size:14px;font-family:inherit;opacity:0.9">🗑 選んだ線を削除</button>
       </div>
     </div>
 
@@ -190,8 +194,9 @@
         <button id="nextCand" class="hidden">↪ 別の候補を試す</button>
         <button id="showLines">📏 線を今すぐ表示</button>
         <button id="pickBall">✏️ 線を動かす</button>
+        <button id="addLineBtn">➕ 線を追加</button>
         <button id="addComment">💬 コメント追加</button>
-        <span class="hint">「線を今すぐ表示」で線を確認できます。ズレていたら「線を動かす」で調整。「コメント追加」は、シークバーでコメントしたい場面に移動してから押すと、その場面が完成動画のスロー再生で4秒止まりコメントが表示されます</span>
+        <span class="hint">「線を今すぐ表示」で線を確認、「線を動かす」でドラッグ調整、「線を追加」で好きな場所に自分の線を引けます。「コメント追加」は、シークバーでコメントしたい場面に移動してから押すと、その場面が完成動画のスロー再生で4秒止まりコメントが表示されます</span>
       </div>
       <div id="commentList"></div>
       <div class="row">
@@ -234,6 +239,21 @@
           <input type="checkbox" id="guides" checked style="width:18px;height:18px">
           <span class="hint">スロー再生時に赤いガイド線を表示(動画ごとの設定は一覧のプルダウン)</span>
         </label>
+      </div>
+      <div class="row">
+        <span class="label">BGM(音楽)</span>
+        <select id="bgm">
+          <option value="">なし</option>
+          <option value="bgm1">明るくさわやか</option>
+          <option value="bgm2">前向きポップ</option>
+          <option value="bgm3">軽快アコースティック</option>
+          <option value="bgm4">ハッピー</option>
+          <option value="bgm5">リラックス</option>
+        </select>
+        <button id="bgmPlay" class="small">🔊 試聴</button>
+        <button id="bgmFileBtn" class="small">📂 自分の曲を選ぶ</button>
+        <input type="file" id="bgmFile" accept="audio/*" style="display:none">
+        <span class="hint">完成動画に音楽を重ねます(一覧の曲は著作権フリー・商用利用可・クレジット不要)。自分の曲を使う場合は、その曲の著作権にご注意ください</span>
       </div>
       <div class="row">
         <span class="label">タイトル画面</span>
@@ -291,7 +311,7 @@
   </div>
 </div>
 <script src="lib/mp4box.all.min.js"></script>
-<script src="remux.js?v=44"></script>
-<script type="module" src="app.js?v=44"></script>
+<script src="remux.js?v=48"></script>
+<script type="module" src="app.js?v=48"></script>
 </body>
 </html>
