@@ -1192,7 +1192,6 @@ $('pickDone').addEventListener('click', (e) => {
   const it = items[cur];
   if (it) drawOverlayLines(it);
   $('pickLayer').classList.add('hidden');
-  video.setAttribute('controls', ''); // 動画のコントロールを元に戻す
   saveSession();
   setStatus('✅ 線を調整しました(プレビューや書き出しにも反映されます)', 'ok');
 });
@@ -1765,8 +1764,45 @@ $('cornerPlay').addEventListener('click', (e) => {
   e.stopPropagation();
   if (video.paused) video.play(); else video.pause();
 });
-video.addEventListener('play', () => { $('cornerPlay').textContent = '⏸'; });
-video.addEventListener('pause', () => { $('cornerPlay').textContent = '▶'; });
+video.addEventListener('play', () => { $('cornerPlay').textContent = '⏸'; $('playBtn').textContent = '⏸'; });
+video.addEventListener('pause', () => { $('cornerPlay').textContent = '▶'; $('playBtn').textContent = '▶'; });
+
+// ---------------- 独自シークバー・コマ送り ----------------
+// スマホの標準コントロールは「長押しメニュー」「ダブルタップで10秒
+// スキップ」が誤操作の原因になるため使わず、独自のバーで操作する
+const seekbar = $('seekbar');
+let scrubbing = false;
+function syncSeekbar() {
+  if (video.duration) seekbar.max = video.duration;
+  if (!scrubbing) seekbar.value = video.currentTime || 0;
+  $('curTime').textContent = fmt(video.currentTime || 0);
+}
+video.addEventListener('loadedmetadata', syncSeekbar);
+video.addEventListener('timeupdate', syncSeekbar);
+video.addEventListener('seeked', syncSeekbar);
+seekbar.addEventListener('input', () => {
+  scrubbing = true;
+  stopPreview();
+  video.pause();
+  video.currentTime = parseFloat(seekbar.value);
+  $('curTime').textContent = fmt(parseFloat(seekbar.value));
+});
+seekbar.addEventListener('change', () => { scrubbing = false; });
+$('playBtn').addEventListener('click', () => {
+  if (video.paused) video.play(); else video.pause();
+});
+// 1コマ/1秒単位の前後移動(コメントの場面をピッタリ選ぶ用)
+document.querySelectorAll('[data-step]').forEach(b => {
+  b.addEventListener('click', () => {
+    if (!video.duration) return;
+    stopPreview();
+    video.pause();
+    video.currentTime = Math.max(0, Math.min(video.duration,
+      video.currentTime + parseFloat(b.dataset.step)));
+  });
+});
+// 動画の長押しメニュー(ダウンロード等)を出さない
+video.addEventListener('contextmenu', e => e.preventDefault());
 
 // 起動時チェック
 if (location.protocol === 'file:') {
