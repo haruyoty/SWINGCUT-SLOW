@@ -1197,18 +1197,29 @@ function renderComments() {
 // コメントの吹き出しを描く。W/H=描画先サイズ、mapPt=元動画座標→描画先座標
 // の変換(書き出しのズーム用、プレビューではnull)
 function drawCommentBox(ctx2, it, text, W, H, mapPt) {
-  // 人物の中心X(姿勢データの肩・腰から)。無ければ中央とみなす
-  let px = W / 2;
+  const pad = W * 0.03;
+  // 人物の全身の範囲(姿勢の33点)に、スイング中に腕やクラブが伸びる
+  // 余裕を足して「人物ゾーン」とし、その外側の空いた側に吹き出しを置く
+  let minX = W * 0.35, maxX = W * 0.65; // 姿勢が取れない動画では中央を人物とみなす
   if (it.posePts) {
-    let sx = 0;
-    for (const i of [11, 12, 23, 24]) sx += it.posePts[i][0];
-    px = sx / 4;
-    if (mapPt) px = mapPt([px, 0])[0];
+    minX = Infinity; maxX = -Infinity;
+    for (const p of it.posePts) {
+      const x = mapPt ? mapPt([p[0], p[1]])[0] : p[0];
+      if (x < minX) minX = x;
+      if (x > maxX) maxX = x;
+    }
+    const reach = (maxX - minX) * 0.45; // 腕+クラブの伸びる分
+    minX -= reach;
+    maxX += reach;
   }
-  const side = px >= W / 2 ? 'left' : 'right'; // 人物がいない側に置く
-  const boxW = W * 0.42;
-  const x0 = side === 'left' ? W * 0.04 : W - W * 0.04 - boxW;
-  const fsC = Math.max(13, Math.round(H * 0.048));
+  const leftGap = Math.max(0, minX - pad * 2);
+  const rightGap = Math.max(0, W - maxX - pad * 2);
+  const side = rightGap >= leftGap ? 'right' : 'left';
+  const gap = Math.max(leftGap, rightGap);
+  // 空きスペースに収まる幅に(狭すぎる場合は最低幅を確保し、文字を縮小)
+  const boxW = Math.min(W * 0.46, Math.max(W * 0.22, gap));
+  const x0 = side === 'left' ? pad : W - pad - boxW;
+  const fsC = Math.max(14, Math.round(H * 0.065 * Math.min(1, boxW / (W * 0.34))));
   ctx2.save();
   ctx2.font = 'bold ' + fsC + 'px sans-serif';
   // 幅に収まるよう文字単位で折り返す
@@ -1224,7 +1235,8 @@ function drawCommentBox(ctx2, it, text, W, H, mapPt) {
   }
   const lh = fsC * 1.35;
   const boxH = lines.length * lh + fsC * 0.9;
-  const y0 = Math.max(H * 0.05, Math.min(H * 0.42 - boxH / 2, H - boxH - H * 0.05));
+  // 上の角に置く(体や足と重なりにくい)
+  const y0 = H * 0.06;
   ctx2.globalAlpha = 0.62;
   ctx2.fillStyle = '#000';
   ctx2.beginPath();
@@ -1808,7 +1820,8 @@ $('export').onclick = async () => {
         if (raw) {
           // スマホカメラの巨大な写真を毎コマ描くとGPUに負担がかかり、
           // 録画の取り込みが止まることがある。先に出力サイズへ縮小しておく
-          const s2 = Math.min(tw / raw.naturalWidth, th / raw.naturalHeight, 1);
+          // (画面いっぱいに表示するので「覆う」大きさに合わせる)
+          const s2 = Math.min(1, Math.max(tw / raw.naturalWidth, th / raw.naturalHeight));
           const pc = document.createElement('canvas');
           pc.width = Math.max(2, Math.round(raw.naturalWidth * s2));
           pc.height = Math.max(2, Math.round(raw.naturalHeight * s2));
@@ -1864,7 +1877,8 @@ $('export').onclick = async () => {
             ctx.translate(0, th * 0.22 * (1 - e));
           }
           if (img) {
-            const s2 = Math.min(tw / img.width, th / img.height);
+            // 画面いっぱいに表示(はみ出す部分は中央基準で切り取り)
+            const s2 = Math.max(tw / img.width, th / img.height);
             const w = img.width * s2, h = img.height * s2;
             ctx.drawImage(img, (tw - w) / 2, (th - h) / 2, w, h);
           }
