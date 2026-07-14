@@ -113,6 +113,11 @@
     flex: 1; height: 34px; accent-color: #6ea8ff;
     touch-action: none; cursor: pointer; background: transparent;
   }
+  .stars span {
+    font-size: 28px; cursor: pointer; color: #4a5670;
+    padding: 0 3px; user-select: none;
+  }
+  .stars span.on { color: #ffd400; }
   #commentDialog {
     position: fixed; inset: 0; z-index: 50;
     background: rgba(0,0,0,.6);
@@ -143,7 +148,7 @@
 </head>
 <body>
 <div class="app">
-  <h1>⛳ スイング動画編集ツール <span style="font-size:12px;color:#93a0b5">v50</span></h1>
+  <h1>⛳ スイング動画編集ツール <span style="font-size:12px;color:#93a0b5">v55</span></h1>
   <div class="sub">ゴルフスイングを自動検出し、「通常速度 → スロー再生(ガイド線付き)」の動画を作成します。複数の動画は1本に連結されます。動画はどこにも送信されず、すべてこの端末の中で処理されます。</div>
 
   <label class="drop" id="drop">
@@ -250,6 +255,11 @@
           <option value="bgm3">軽快アコースティック</option>
           <option value="bgm4">ハッピー</option>
           <option value="bgm5">リラックス</option>
+          <option value="bgm6">ポジティブ</option>
+          <option value="bgm7">爽快エレクトロ</option>
+          <option value="bgm8">モチベーションギター</option>
+          <option value="bgm9">前向きドライブ</option>
+          <option value="bgm10">チルアウト</option>
         </select>
         <button id="bgmPlay" class="small">🔊 試聴</button>
         <button id="bgmFileBtn" class="small">📂 自分の曲を選ぶ</button>
@@ -292,6 +302,44 @@
           </select>
         </label>
       </div>
+      <div class="row">
+        <span class="label">評価画面</span>
+        <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
+          <input type="checkbox" id="outroOn" style="width:18px;height:18px">
+          <span class="hint">動画の最後に「ラウンド診断」(5つ星の評価とコメント)を20秒間表示</span>
+        </label>
+      </div>
+      <div id="outroRow" class="hidden">
+        <div class="row" style="margin-top:10px">
+          <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
+            <input type="checkbox" id="outroTechOn" checked style="width:18px;height:18px">
+            <b style="color:#ffd76e">技術</b><span class="hint">の評価を表示する</span>
+          </label>
+        </div>
+        <div id="outroTechRows">
+          <div class="row"><span class="label">ドライバー</span><span class="stars" data-cat="driver"></span></div>
+          <div class="row"><span class="label">セカンドショット</span><span class="stars" data-cat="second"></span></div>
+          <div class="row"><span class="label">アプローチ</span><span class="stars" data-cat="approach"></span></div>
+          <div class="row"><span class="label">パター</span><span class="stars" data-cat="putter"></span></div>
+        </div>
+        <div class="row" style="margin-top:10px">
+          <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
+            <input type="checkbox" id="outroStratOn" checked style="width:18px;height:18px">
+            <b style="color:#ffd76e">戦略</b><span class="hint">の評価を表示する</span>
+          </label>
+        </div>
+        <div id="outroStratRows">
+          <div class="row"><span class="label">クラブ選択</span><span class="stars" data-cat="club"></span></div>
+          <div class="row"><span class="label">ターゲット設定</span><span class="stars" data-cat="target"></span></div>
+          <div class="row"><span class="label">リカバリー</span><span class="stars" data-cat="recovery"></span></div>
+          <div class="row"><span class="label">状況判断</span><span class="stars" data-cat="lie"></span></div>
+        </div>
+        <div class="row" style="margin-top:10px">
+          <span class="label">総評コメント</span>
+          <textarea id="outroComment" rows="2" placeholder="総評コメント(任意・改行できます)"
+                    style="flex:1;min-width:150px;background:#33405c;color:#e8ecf3;border:none;border-radius:8px;padding:9px 12px;font-size:14px;font-family:inherit;resize:vertical"></textarea>
+        </div>
+      </div>
       <div class="row" style="margin-top:16px">
         <button class="primary" id="export">💾 動画を作成する</button>
       </div>
@@ -312,7 +360,7 @@
   </div>
 </div>
 <script src="lib/mp4box.all.min.js"></script>
-<script src="remux.js?v=50"></script>
-<script type="module" src="app.js?v=50"></script>
+<script src="remux.js?v=55"></script>
+<script type="module" src="app.js?v=55"></script>
 </body>
 </html>

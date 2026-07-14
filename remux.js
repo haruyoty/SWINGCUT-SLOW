@@ -181,6 +181,13 @@
     const mdatSize = running - mdatDataStart + 8; // 8ヘッダ + データ
     const mdatHeader = concat([b32(mdatSize), str4('mdat')]);
 
-    return new Blob([ftyp, moov, mdatHeader, ...dataChunks], { type: 'video/mp4' });
+    const out = new Blob([ftyp, moov, mdatHeader, ...dataChunks], { type: 'video/mp4' });
+    // 呼び出し側で「映像が途中で切れていないか」を確認できるよう、
+    // トラックごとの実時間を添付する
+    out.trackDurations = trs.map(t => ({
+      type: t.type,
+      sec: t.samples.reduce((a, s) => a + s.duration, 0) / t.timescale
+    }));
+    return out;
   }
 })();

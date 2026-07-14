@@ -973,7 +973,9 @@ async function ensureLines(it) {
 // 完成動画に元の音声と重ねてミックスする(音量は控えめ)
 const BGM_FILES = {
   bgm1: 'audio/bgm1.mp3', bgm2: 'audio/bgm2.mp3', bgm3: 'audio/bgm3.mp3',
-  bgm4: 'audio/bgm4.mp3', bgm5: 'audio/bgm5.mp3'
+  bgm4: 'audio/bgm4.mp3', bgm5: 'audio/bgm5.mp3', bgm6: 'audio/bgm6.mp3',
+  bgm7: 'audio/bgm7.mp3', bgm8: 'audio/bgm8.mp3', bgm9: 'audio/bgm9.mp3',
+  bgm10: 'audio/bgm10.mp3'
 };
 const BGM_VOLUME = 0.25; // 元の音声を邪魔しない音量
 let bgmAudition = null;
@@ -1049,6 +1051,96 @@ async function restoreBgmCustom() {
       if (localStorage.getItem('bgm') === 'custom') $('bgm').value = 'custom';
     }
   } catch (e) { /* 復元失敗時は同梱曲のみ */ }
+}
+
+// ---------------- 評価画面(スイング診断) ----------------
+// 動画の最後に、4項目の5つ星評価と総評コメントを表示する
+const OUTRO_SEC = 20;
+// 「技術」「戦略」の2グループ。それぞれ表示するかチェックで選べる
+const OUTRO_GROUPS = [
+  { title: '技術', chk: 'outroTechOn', rows: 'outroTechRows',
+    cats: [['driver', 'ドライバー'], ['second', 'セカンドショット'],
+           ['approach', 'アプローチ'], ['putter', 'パター']] },
+  { title: '戦略', chk: 'outroStratOn', rows: 'outroStratRows',
+    cats: [['club', 'クラブ選択'], ['target', 'ターゲット設定'],
+           ['recovery', 'リカバリー'], ['lie', '状況判断']] }
+];
+const outroRatings = {
+  driver: 3, second: 3, approach: 3, putter: 3,
+  club: 3, target: 3, recovery: 3, lie: 3
+};
+function outroEnabled() { return $('outroOn').checked; }
+let outroSaveTimer = null;
+function saveOutro() {
+  clearTimeout(outroSaveTimer);
+  outroSaveTimer = setTimeout(async () => {
+    try {
+      const db = await dbOpen();
+      const tx = db.transaction('session', 'readwrite');
+      tx.objectStore('session').put({
+        on: $('outroOn').checked,
+        tech: $('outroTechOn').checked,
+        strat: $('outroStratOn').checked,
+        ratings: { ...outroRatings },
+        comment: $('outroComment').value
+      }, 'outro');
+      await new Promise((res, rej) => { tx.oncomplete = res; tx.onerror = () => rej(tx.error); });
+      db.close();
+    } catch (e) { /* 保存失敗は動作に影響しない */ }
+  }, 600);
+}
+// 星をタップするとその数までが点灯する
+function renderStars() {
+  document.querySelectorAll('#outroRow .stars').forEach(box => {
+    const cat = box.dataset.cat;
+    if (!box.children.length) {
+      for (let i = 1; i <= 5; i++) {
+        const s = document.createElement('span');
+        s.textContent = '★';
+        s.onclick = () => { outroRatings[cat] = i; renderStars(); saveOutro(); };
+        box.appendChild(s);
+      }
+    }
+    [...box.children].forEach((s, i) => s.classList.toggle('on', i < outroRatings[cat]));
+  });
+}
+renderStars();
+$('outroOn').addEventListener('change', () => {
+  $('outroRow').classList.toggle('hidden', !$('outroOn').checked);
+  saveOutro();
+});
+// 技術/戦略それぞれの表示ON/OFF(OFFのグループは星の行も隠す)
+for (const grp of OUTRO_GROUPS) {
+  $(grp.chk).addEventListener('change', () => {
+    $(grp.rows).classList.toggle('hidden', !$(grp.chk).checked);
+    saveOutro();
+  });
+}
+$('outroComment').addEventListener('input', saveOutro);
+async function restoreOutro() {
+  try {
+    const db = await dbOpen();
+    const tx = db.transaction('session', 'readonly');
+    const req = tx.objectStore('session').get('outro');
+    const d = await new Promise((res, rej) => { req.onsuccess = () => res(req.result); req.onerror = () => rej(req.error); });
+    db.close();
+    if (!d) return;
+    $('outroOn').checked = !!d.on;
+    $('outroRow').classList.toggle('hidden', !d.on);
+    $('outroTechOn').checked = d.tech !== false;
+    $('outroStratOn').checked = d.strat !== false;
+    for (const grp of OUTRO_GROUPS) {
+      $(grp.rows).classList.toggle('hidden', !$(grp.chk).checked);
+    }
+    if (d.ratings) {
+      // 既知の項目だけ取り込む(旧バージョンの保存データにも対応)
+      for (const k of Object.keys(outroRatings)) {
+        if (typeof d.ratings[k] === 'number') outroRatings[k] = d.ratings[k];
+      }
+    }
+    $('outroComment').value = d.comment || '';
+    renderStars();
+  } catch (e) { /* 復元失敗時は初期状態 */ }
 }
 
 // ---------------- 場面コメント ----------------
@@ -1576,6 +1668,8 @@ $('export').onclick = async () => {
   stopPreview();
   stopAudition();
   let bgmSrc = null;
+  let bgmGainNode = null;
+  let bgmStartTimer = null;
   let wakeLock = null;
   let keepaliveTimer = null;
   try { wakeLock = await navigator.wakeLock?.request('screen'); } catch (e) {}
@@ -1620,19 +1714,40 @@ $('export').onclick = async () => {
         bgmSrc = ac.createBufferSource();
         bgmSrc.buffer = buf;
         bgmSrc.loop = true;
-        const g = ac.createGain();
-        g.gain.value = BGM_VOLUME;
-        bgmSrc.connect(g);
-        g.connect(recDest);
-        bgmSrc.start();
-      } catch (e) { bgmSrc = null; }
+        bgmGainNode = ac.createGain();
+        bgmGainNode.gain.value = BGM_VOLUME;
+        bgmSrc.connect(bgmGainNode);
+        bgmGainNode.connect(recDest);
+        // 再生開始は録画が始まってから(3秒後に流し始める)
+      } catch (e) { bgmSrc = null; bgmGainNode = null; }
     }
     const chunks = [];
-    let onFirstData = null; // 最初の録画データが出たら呼ぶ(エンコード開始の確実な合図)
+    // 最初の録画データが出たら呼ぶフック(エンコード開始の確実な合図)。
+    // タイトルのアニメーション開始やBGMの遅延開始に使う
+    const firstDataHooks = [];
+    let firstDataFired = false;
     recorder.ondataavailable = e => {
       if (!e.data.size) return;
       chunks.push(e.data);
-      if (onFirstData) { onFirstData(); onFirstData = null; }
+      if (!firstDataFired) {
+        firstDataFired = true;
+        for (const f of firstDataHooks) { try { f(); } catch (err) {} }
+      }
+    };
+    // BGMは動画が始まってから3秒後に流し始める
+    if (bgmSrc) {
+      firstDataHooks.push(() => {
+        bgmStartTimer = setTimeout(() => {
+          try { bgmSrc.start(); } catch (e) {}
+        }, 3000);
+      });
+    }
+    // 動画の最後5秒でBGMをだんだん小さくする(終わりまでの秒数を指定して予約)
+    const scheduleBgmFade = (delaySec) => {
+      if (!bgmGainNode) return;
+      const t = ac.currentTime + Math.max(0, delaySec);
+      bgmGainNode.gain.setValueAtTime(BGM_VOLUME, t);
+      bgmGainNode.gain.linearRampToValueAtTime(0.0001, t + 5);
     };
     const stopped = new Promise(res => { recorder.onstop = res; });
     // 録画開始は最初のフレーム描画時まで遅らせる(冒頭の黒画面を防ぐ)
@@ -1642,6 +1757,15 @@ $('export').onclick = async () => {
     // ストップフレームが押せない・黒く表示されるため、録画中は常に
     // 一定間隔でコマを送り続ける(直前の画面がそのまま静止表示される)
     const vTrack = stream.getVideoTracks()[0];
+    // 描いたコマを確実に録画へ送る(スマホでは自動取り込みが止まる
+    // ことがあるため、描画のたびに明示的に送る)
+    const pushFrame = () => {
+      try { if (vTrack.requestFrame) vTrack.requestFrame(); } catch (e) {}
+    };
+    // 書き出し中の描画ループはrAFではなくタイマーで回す。タブが裏に
+    // 回るとrAFは完全に止まり映像が欠ける(音声だけ残る)が、タイマー
+    // なら間隔が1秒に落ちても続行でき、映像が途切れない
+    const nextFrame = cb => setTimeout(cb, 33);
     keepaliveTimer = setInterval(() => {
       try {
         if (recorder.state !== 'recording') return;
@@ -1651,7 +1775,10 @@ $('export').onclick = async () => {
     }, 100);
 
     const introSec = introEnabled() ? INTRO_SEC : 0;
-    const totalSec = introSec +
+    const outroGroups = outroEnabled() ? OUTRO_GROUPS.filter(g => $(g.chk).checked) : [];
+    const outroSec = (outroGroups.length ||
+      (outroEnabled() && $('outroComment').value.trim())) ? OUTRO_SEC : 0;
+    const totalSec = introSec + outroSec +
       items.reduce((s, it) => s + (it.end - it.start) * (1 + 1 / speed) +
         (it.comments || []).filter(c => c.t >= it.start && c.t <= it.end).length * COMMENT_SEC, 0);
     let doneSec = 0;
@@ -1672,12 +1799,22 @@ $('export').onclick = async () => {
       setStatus('<span class="spinner"></span>タイトル画面を書き出し中…');
       let img = null;
       if (introImage) {
-        img = await new Promise(res => {
+        const raw = await new Promise(res => {
           const im = new Image();
           im.onload = () => res(im);
           im.onerror = () => res(null); // 読めない画像は黒背景+文字のみで続行
           im.src = URL.createObjectURL(introImage);
         });
+        if (raw) {
+          // スマホカメラの巨大な写真を毎コマ描くとGPUに負担がかかり、
+          // 録画の取り込みが止まることがある。先に出力サイズへ縮小しておく
+          const s2 = Math.min(tw / raw.naturalWidth, th / raw.naturalHeight, 1);
+          const pc = document.createElement('canvas');
+          pc.width = Math.max(2, Math.round(raw.naturalWidth * s2));
+          pc.height = Math.max(2, Math.round(raw.naturalHeight * s2));
+          pc.getContext('2d').drawImage(raw, 0, 0, pc.width, pc.height);
+          img = pc;
+        }
       }
       // 改行で複数行に分ける(空行はそのまま行間として残す)
       const lines = $('introText').value.replace(/\s+$/, '').split('\n');
@@ -1706,14 +1843,16 @@ $('export').onclick = async () => {
       await new Promise(resolve => {
         const draw = () => {
           if (recorder.state === 'inactive') {
-            onFirstData = startClock;
+            firstDataHooks.push(startClock);
             recorder.start(300); // 300msごとにデータを受け取る
             setTimeout(startClock, 2500); // データが来ない環境向けの保険
           }
           const el = Math.max(0, (performance.now() - t0) / 1000);
-          const e = 1 - Math.pow(1 - Math.min(1, el / 0.8), 3); // 0.8秒かけてスッと現れる
+          const e = 1 - Math.pow(1 - Math.min(1, el / 0.8), 3); // 画像は0.8秒かけて現れる
+          const elT = Math.max(0, el - 1.0); // 文字は画像より1秒遅れて出す
           ctx.fillStyle = '#000';
           ctx.fillRect(0, 0, tw, th);
+          // 画像(選んだアニメーションで先に登場)
           ctx.save();
           if (anim === 'fade') ctx.globalAlpha = e;
           else if (anim === 'zoom') {
@@ -1725,19 +1864,22 @@ $('export').onclick = async () => {
             ctx.translate(0, th * 0.22 * (1 - e));
           }
           if (img) {
-            const s2 = Math.min(tw / img.naturalWidth, th / img.naturalHeight);
-            const w = img.naturalWidth * s2, h = img.naturalHeight * s2;
+            const s2 = Math.min(tw / img.width, th / img.height);
+            const w = img.width * s2, h = img.height * s2;
             ctx.drawImage(img, (tw - w) / 2, (th - h) / 2, w, h);
           }
-          if (hasText) {
+          ctx.restore();
+          // 文字(1秒後にふわっと現れる。「1文字ずつ」はそこから順に出る)
+          if (hasText && elT > 0) {
+            ctx.save();
+            ctx.globalAlpha = Math.min(1, elT / 0.5);
             ctx.font = 'bold ' + fs + 'px sans-serif';
             const lh = fs * 1.3;
             const y0 = th / 2 - lh * (lines.length - 1) / 2;
             ctx.textBaseline = 'middle';
             ctx.fillStyle = color;
-            // 「1文字ずつ表示」は1.4秒かけて左から順に出す(位置は固定)
             let budget = anim === 'type'
-              ? Math.ceil(totalChars * Math.min(1, el / 1.4)) : Infinity;
+              ? Math.ceil(totalChars * Math.min(1, elT / 1.4)) : Infinity;
             ctx.textAlign = 'left';
             if (outline) {
               ctx.strokeStyle = outlineColor;
@@ -1753,13 +1895,14 @@ $('export').onclick = async () => {
               ctx.fillText(shown, x, y);
             });
             ctx.textBaseline = 'alphabetic';
+            ctx.restore();
           }
-          ctx.restore();
+          pushFrame();
           $('pfill').style.width = Math.min(100, Math.min(el, introSec) / totalSec * 100).toFixed(1) + '%';
           if (el >= introSec) { doneSec += introSec; return resolve(); }
-          requestAnimationFrame(draw);
+          nextFrame(draw);
         };
-        requestAnimationFrame(draw);
+        nextFrame(draw);
       });
     }
 
@@ -1820,14 +1963,15 @@ $('export').onclick = async () => {
               // コメント付きの停止映像(映像は止めたまま同じ画面を描き続ける)
               drawFrame();
               drawCommentBox(ctx, it, freezeCmt.text, tw, th, mapPt);
+              pushFrame();
               setStatus(`<span class="spinner"></span>書き出し中 (${idx + 1}/${items.length}本目・コメント表示)… 画面を閉じないでください`);
               if (performance.now() >= freezeUntil) {
                 freezeCmt = null;
                 doneSec += COMMENT_SEC;
-                ev.play().then(() => requestAnimationFrame(draw)).catch(reject);
+                ev.play().then(() => nextFrame(draw)).catch(reject);
                 return;
               }
-              requestAnimationFrame(draw);
+              nextFrame(draw);
               return;
             }
             if (ev.currentTime >= it.end || ev.ended) {
@@ -1844,19 +1988,20 @@ $('export').onclick = async () => {
               if (recorder.state === 'inactive') recorder.start(300);
             }
             drawFrame();
+            pushFrame();
             if (pend.length && ev.currentTime >= pend[0].t) {
               freezeCmt = pend.shift();
               freezeUntil = performance.now() + COMMENT_SEC * 1000;
               ev.pause();
-              requestAnimationFrame(draw);
+              nextFrame(draw);
               return;
             }
             const prog = (doneSec + Math.max(0, ev.currentTime - it.start) / rate) / totalSec;
             $('pfill').style.width = Math.min(100, prog * 100).toFixed(1) + '%';
             setStatus(`<span class="spinner"></span>書き出し中 (${idx + 1}/${items.length}本目・${label})… 画面を閉じないでください`);
-            requestAnimationFrame(draw);
+            nextFrame(draw);
           };
-          ev.play().then(() => requestAnimationFrame(draw)).catch(reject);
+          ev.play().then(() => nextFrame(draw)).catch(reject);
         });
       });
 
@@ -1864,7 +2009,113 @@ $('export').onclick = async () => {
         .filter(c => c.t >= it.start && c.t <= it.end)
         .sort((a, b) => a.t - b.t);
       await playPass(1, null, '通常速度');
+      if (idx === items.length - 1 && !outroSec) {
+        // 診断画面が無い場合は、最後のスロー再生の終わりに向けてフェード
+        scheduleBgmFade((it.end - it.start) / speed + cmts.length * COMMENT_SEC - 5);
+      }
       await playPass(speed, it.lines, 'スロー', cmts);
+    }
+
+    if (outroSec) {
+      // 最後に「ラウンド診断」画面(5つ星評価+総評コメント)を付ける。
+      // 星は左から順にパッパッと点いていく
+      setStatus('<span class="spinner"></span>診断結果の画面を書き出し中…');
+      scheduleBgmFade(outroSec - 5); // 診断画面の最後5秒でBGMをフェードアウト
+      const comment = $('outroComment').value.replace(/\s+$/, '');
+      const t0o = performance.now();
+      await new Promise(resolve => {
+        const draw = () => {
+          const el = (performance.now() - t0o) / 1000;
+          const g = ctx.createLinearGradient(0, 0, 0, th);
+          g.addColorStop(0, '#143a23');
+          g.addColorStop(1, '#06140c');
+          ctx.fillStyle = g;
+          ctx.fillRect(0, 0, tw, th);
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'middle';
+          const fsT = Math.round(Math.min(th, tw) * 0.09);
+          ctx.font = 'bold ' + fsT + 'px sans-serif';
+          ctx.fillStyle = '#ffd400';
+          ctx.fillText('ラウンド診断', tw / 2, th * 0.10);
+          // 1行(ラベル+星5つ)を描く。星は左から順に点いていく
+          const drawRow = (label, cat, cx, y, fsL, fsS, rowIdx) => {
+            ctx.font = 'bold ' + fsL + 'px sans-serif';
+            ctx.textAlign = 'right';
+            ctx.fillStyle = '#fff';
+            ctx.fillText(label, cx - fsS * 0.3, y);
+            ctx.font = fsS + 'px sans-serif';
+            ctx.textAlign = 'left';
+            const revealed = Math.max(0, Math.floor((el - 0.4 - rowIdx * 0.2) / 0.12) + 1);
+            for (let s = 0; s < 5; s++) {
+              const on = s < outroRatings[cat] && s < revealed;
+              ctx.fillStyle = on ? '#ffd400' : 'rgba(255,255,255,0.25)';
+              ctx.fillText(on ? '★' : '☆', cx + fsS * 0.3 + s * fsS * 1.15, y);
+            }
+          };
+          if (outroGroups.length === 2 && tw >= th) {
+            // 横長動画で両グループ表示: 技術=左列、戦略=右列
+            const fsG = Math.round(th * 0.055);
+            const fsL = Math.round(th * 0.044);
+            const fsS = Math.round(th * 0.058);
+            outroGroups.forEach((grp, gi) => {
+              const cx = tw * (0.28 + gi * 0.44);
+              ctx.font = 'bold ' + fsG + 'px sans-serif';
+              ctx.textAlign = 'center';
+              ctx.fillStyle = '#8fe3ae';
+              ctx.fillText(grp.title, cx, th * 0.23);
+              grp.cats.forEach(([cat, label], i) =>
+                drawRow(label, cat, cx, th * (0.33 + i * 0.105), fsL, fsS, i));
+            });
+          } else {
+            // 1グループのみ、または縦長動画: 縦に並べる
+            const n = outroGroups.reduce((s2, g2) => s2 + g2.cats.length + 1, 0);
+            const base = Math.min(th, tw * 0.85);
+            const fsG = Math.round(base * (n > 5 ? 0.05 : 0.062));
+            const fsL = Math.round(base * (n > 5 ? 0.04 : 0.05));
+            const fsS = Math.round(base * (n > 5 ? 0.05 : 0.066));
+            const yTop = th * 0.19, yBot = th * 0.72;
+            const step = (yBot - yTop) / Math.max(1, n - 1);
+            let yi = 0, ri = 0;
+            for (const grp of outroGroups) {
+              ctx.font = 'bold ' + fsG + 'px sans-serif';
+              ctx.textAlign = 'center';
+              ctx.fillStyle = '#8fe3ae';
+              ctx.fillText(grp.title, tw / 2, yTop + yi * step);
+              yi++;
+              for (const [cat, label] of grp.cats) {
+                drawRow(label, cat, tw / 2, yTop + yi * step, fsL, fsS, ri);
+                yi++; ri++;
+              }
+            }
+          }
+          if (comment) {
+            const fsC = Math.round(th * 0.045);
+            ctx.font = 'bold ' + fsC + 'px sans-serif';
+            ctx.textAlign = 'center';
+            ctx.fillStyle = '#e8ecf3';
+            const maxW = tw * 0.88;
+            const lines = [];
+            for (const para of comment.split('\n')) {
+              let cl = '';
+              for (const ch of para) {
+                if (cl && ctx.measureText(cl + ch).width > maxW) { lines.push(cl); cl = ch; }
+                else cl += ch;
+              }
+              lines.push(cl);
+            }
+            const lh = fsC * 1.4;
+            const y0 = th * 0.82 - (lines.length - 1) * lh / 2;
+            lines.forEach((L, i) => { if (L) ctx.fillText(L, tw / 2, y0 + i * lh); });
+          }
+          ctx.textAlign = 'left';
+          ctx.textBaseline = 'alphabetic';
+          pushFrame();
+          $('pfill').style.width = Math.min(100, (doneSec + Math.min(el, outroSec)) / totalSec * 100).toFixed(1) + '%';
+          if (el >= outroSec) { doneSec += outroSec; return resolve(); }
+          nextFrame(draw);
+        };
+        nextFrame(draw);
+      });
     }
     exportSrcNode.disconnect();
     exportVideo.removeAttribute('src');
@@ -1893,7 +2144,19 @@ $('export').onclick = async () => {
       .map(it => `${it.file.name} → ${it.viewUsed}`).join(' / ');
     if (viewInfo) viewInfo = `<div class="hint">ガイド線: ${viewInfo}</div>`;
     $('pfill').style.width = '100%';
-    setStatus('✅ 書き出しが完了しました!下のボタンから保存してください', 'ok');
+    // 映像が途中で途切れていないか確認(音声より2秒以上短ければ異常)
+    let tailWarn = '';
+    const td = blob.trackDurations;
+    if (td) {
+      const tv = td.find(t => t.type === 'video');
+      const ta = td.find(t => t.type === 'audio');
+      if (tv && ta && tv.sec < ta.sec - 2) {
+        tailWarn = '⚠ 映像が' + tv.sec.toFixed(1) + '秒までしか記録できていません(音声は' +
+          ta.sec.toFixed(1) + '秒)。書き出し中は他のアプリに切り替えず、画面を点けたままにして、もう一度お試しください';
+      }
+    }
+    if (tailWarn) setStatus(tailWarn, 'err');
+    else setStatus('✅ 書き出しが完了しました!下のボタンから保存してください', 'ok');
     $('result').innerHTML = viewInfo +
       `<a class="dl" href="${url}" download="${name}">⬇ 完成動画を保存 (${(blob.size / 1048576).toFixed(1)}MB)</a>`;
   } catch (e) {
@@ -1901,6 +2164,7 @@ $('export').onclick = async () => {
   } finally {
     exporting = false;
     clearInterval(keepaliveTimer);
+    clearTimeout(bgmStartTimer);
     try { if (bgmSrc) { bgmSrc.stop(); bgmSrc.disconnect(); } } catch (e) {}
     $('export').disabled = false;
     $('pbar').classList.add('hidden');
@@ -1960,6 +2224,7 @@ if (location.protocol === 'file:') {
 restoreSession();
 restoreIntro();
 restoreBgmCustom();
+restoreOutro();
 
 // 開発検証用フック
 window.DEBUG_FN = { loadInto, seekTo, seekFrame, waitMeta };
