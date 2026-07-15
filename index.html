@@ -148,7 +148,7 @@
 </head>
 <body>
 <div class="app">
-  <h1>⛳ スイング動画編集ツール <span style="font-size:12px;color:#93a0b5">v59</span></h1>
+  <h1>⛳ スイング動画編集ツール <span style="font-size:12px;color:#93a0b5">v62</span></h1>
   <div class="sub">ゴルフスイングを自動検出し、「通常速度 → スロー再生(ガイド線付き)」の動画を作成します。複数の動画は1本に連結されます。動画はどこにも送信されず、すべてこの端末の中で処理されます。</div>
 
   <label class="drop" id="drop">
@@ -202,7 +202,9 @@
         <button id="pickBall">✏️ 線を動かす</button>
         <button id="addLineBtn">➕ 線を追加</button>
         <button id="addComment">💬 コメント追加</button>
-        <span class="hint">「線を今すぐ表示」で線を確認、「線を動かす」でドラッグ調整、「線を追加」で好きな場所に自分の線を引けます。「コメント追加」は、シークバーでコメントしたい場面に移動してから押すと、その場面が完成動画のスロー再生で4秒止まりコメントが表示されます</span>
+        <button id="preview">🔁 このスイングのプレビュー</button>
+        <button id="previewAll">🎬 全体プレビュー</button>
+        <span class="hint">「線を今すぐ表示」で線を確認、「線を動かす」でドラッグ調整、「線を追加」で好きな場所に自分の線を引けます。「コメント追加」は、シークバーで場面に移動してから押すと、その場面がスロー再生で4秒止まりコメントが表示されます。プレビューは「このスイング」=今の動画だけ、「全体」=タイトル・写真・ラウンド診断込みの完成形(もう一度押すと停止)</span>
       </div>
       <div id="commentList"></div>
       <div class="row">
@@ -230,9 +232,6 @@
           <option value="0.5" selected>0.5倍速</option>
           <option value="0.75">0.75倍速</option>
         </select>
-        <button id="preview">🔁 仕上がりプレビュー</button>
-        <button id="previewAll">🎬 全体プレビュー</button>
-        <span class="hint">「仕上がり」=今の動画だけ、「全体」=タイトル・写真・ラウンド診断も含めた完成形をそのまま再生(もう一度押すと停止)</span>
       </div>
       <div class="row">
         <span class="label">自動ズーム</span>
@@ -384,7 +383,7 @@
   </div>
 </div>
 <script src="lib/mp4box.all.min.js"></script>
-<script src="remux.js?v=59"></script>
-<script type="module" src="app.js?v=59"></script>
+<script src="remux.js?v=62"></script>
+<script type="module" src="app.js?v=62"></script>
 </body>
 </html>

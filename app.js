@@ -1918,6 +1918,9 @@ async function runExport(previewOnly) {
     const totalSec = introSec + outroSec + photoSec +
       items.reduce((s, it) => s + (it.end - it.start) * (1 + 1 / speed) +
         (it.comments || []).filter(c => c.t >= it.start && c.t <= it.end).length * COMMENT_SEC, 0);
+    window.DEBUG_EXPORT = { introSec, outroSec, photoSec, totalSec, log: [] };
+    const dbg = m => window.DEBUG_EXPORT.log.push([(performance.now() / 1000).toFixed(1), m]);
+    dbg('開始');
     let doneSec = 0;
 
     // 書き出し用のvideoは1つを使い回す。スマホは同時に使える動画
@@ -2163,7 +2166,9 @@ async function runExport(previewOnly) {
       await playPass(speed, it.lines, 'スロー', cmts);
     }
 
+    dbg('動画ループ終了 stop=' + previewAllStopRequested);
     if (photoSec && !previewAllStopRequested) {
+      dbg('写真開始');
       // 動画とラウンド診断の間に写真を挟む(画面いっぱい・4秒)
       setStatus('<span class="spinner"></span>写真ページを' + runLabel + '中…');
       scheduleBgmFade(photoSec + outroSec - 5);
@@ -2206,7 +2211,9 @@ async function runExport(previewOnly) {
       }
     }
 
+    dbg('写真終了');
     if (outroSec && !previewAllStopRequested) {
+      dbg('診断開始');
       // 最後に「ラウンド診断」画面(5つ星評価+総評コメント)を付ける。
       // 星は左から順にパッパッと点いていく
       setStatus('<span class="spinner"></span>診断結果の画面を' + runLabel + '中…');
@@ -2311,6 +2318,7 @@ async function runExport(previewOnly) {
     exportVideo.removeAttribute('src');
     exportVideo.load();
     clearInterval(keepaliveTimer);
+    dbg('録画停止');
     recorder.stop();
     await stopped;
     if (previewOnly) {
