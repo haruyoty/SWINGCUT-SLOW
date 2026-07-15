@@ -1053,6 +1053,64 @@ async function restoreBgmCustom() {
   } catch (e) { /* 復元失敗時は同梱曲のみ */ }
 }
 
+// ---------------- 締めの写真(動画とラウンド診断の間) ----------------
+const PHOTO_SEC = 4;
+let midImage = null;
+function setMidImage(f) {
+  midImage = f || null;
+  const t = $('midThumb');
+  if (midImage) {
+    t.src = URL.createObjectURL(midImage);
+    t.classList.remove('hidden');
+    $('midPick').textContent = '🖼 写真を変更';
+  } else {
+    t.classList.add('hidden');
+    $('midPick').textContent = '🖼 写真を選択';
+  }
+}
+async function saveMid() {
+  try {
+    const db = await dbOpen();
+    const tx = db.transaction('session', 'readwrite');
+    tx.objectStore('session').put({ on: $('midOn').checked, image: midImage }, 'mid');
+    await new Promise((res, rej) => { tx.oncomplete = res; tx.onerror = () => rej(tx.error); });
+    db.close();
+  } catch (e) { /* 保存失敗は動作に影響しない */ }
+}
+$('midOn').addEventListener('change', saveMid);
+$('midPick').addEventListener('click', () => $('midFile').click());
+$('midFile').addEventListener('change', e => {
+  if (!e.target.files.length) return;
+  setMidImage(e.target.files[0]);
+  $('midOn').checked = true;
+  e.target.value = '';
+  saveMid();
+});
+async function restoreMid() {
+  try {
+    const db = await dbOpen();
+    const tx = db.transaction('session', 'readonly');
+    const req = tx.objectStore('session').get('mid');
+    const d = await new Promise((res, rej) => { req.onsuccess = () => res(req.result); req.onerror = () => rej(req.error); });
+    db.close();
+    if (!d) return;
+    $('midOn').checked = !!d.on;
+    if (d.image) setMidImage(d.image);
+  } catch (e) { /* 復元失敗時は初期状態 */ }
+}
+
+// ---------------- 動画の音・タイトルの設定(端末に記憶) ----------------
+$('videoSoundOn').addEventListener('change', () => {
+  try { localStorage.setItem('videoSound', $('videoSoundOn').checked ? '1' : '0'); } catch (e) {}
+});
+$('videoTitle').addEventListener('input', () => {
+  try { localStorage.setItem('videoTitle', $('videoTitle').value); } catch (e) {}
+});
+try {
+  if (localStorage.getItem('videoSound') === '0') $('videoSoundOn').checked = false;
+  $('videoTitle').value = localStorage.getItem('videoTitle') || '';
+} catch (e) {}
+
 // ---------------- 評価画面(スイング診断) ----------------
 // 動画の最後に、4項目の5つ星評価と総評コメントを表示する
 const OUTRO_SEC = 20;
@@ -1260,6 +1318,13 @@ $('showLines').onclick = async () => {
   const it = items[cur];
   if (!it) { setStatus('先に動画を読み込んでください', 'err'); return; }
   if (it.start == null) { setStatus('先にスイング区間を設定してください', 'err'); return; }
+  if (linesShown) {
+    // もう一度押すと消す(トグル)
+    linesShown = false;
+    clearOverlay();
+    setStatus('線を消しました(もう一度押すと表示されます)', 'ok');
+    return;
+  }
   if (!$('guides').checked || it.view === 'none') {
     setStatus('ガイド線がオフになっています(チェックを入れるか、一覧のプルダウンを「線: 自動」にしてください)', 'err');
     return;
@@ -1274,7 +1339,8 @@ $('showLines').onclick = async () => {
     return;
   }
   drawOverlayLines(it);
-  setStatus('✅ 線を表示しています(' + (it.viewUsed || '') + ')', 'ok');
+  linesShown = true; // シークしても消えないように表示を維持
+  setStatus('✅ 線を表示しています(' + (it.viewUsed || '') + ')。もう一度押すと消えます', 'ok');
 };
 
 // ---------------- ボール位置の手動指定 ----------------
@@ -1419,7 +1485,7 @@ $('pickDone').addEventListener('click', (e) => {
   activeLineIdx = -1;  // 色替えを解除(すべて赤に戻す)
   showHandles = false; // つまみを消す(書き出しには含めない)
   const it = items[cur];
-  if (it) drawOverlayLines(it);
+  if (it) { drawOverlayLines(it); linesShown = true; }
   $('pickLayer').classList.add('hidden');
   saveSession();
   setStatus('✅ 線を調整しました(プレビューや書き出しにも反映されます)', 'ok');
@@ -1487,8 +1553,9 @@ $('preview').onclick = async () => {
   previewPhase = 1;
   video.playbackRate = 1;
   video.currentTime = it.start;
+  video.muted = !$('videoSoundOn').checked; // 「動画の音」設定に従う
   showBadge('通常速度');
-  clearOverlay();
+  clearOverlay(); // 通常速度パートは線なし(完成動画と同じ)
   video.play();
 };
 let phaseSwitching = false; // スロー切り替え中のシークによるpauseを無視する
@@ -1505,8 +1572,10 @@ function advancePreviewPhase() {
       .sort((a, b) => a.t - b.t);
     const rate = parseFloat($('speed').value);
     video.currentTime = it.start;
+    video.muted = true; // スロー再生は動画の音を出さない
     showBadge($('speed').value + '倍速');
     drawOverlayLines(it);
+    linesShown = true; // 以後、シークしても線は出したままにする
     // スマホではシークで再生が止まることがあるため明示的に再開する。
     // playbackRateはplay後にもう一度設定(リセットする端末がある)
     const p = video.play();
@@ -1565,14 +1634,22 @@ video.addEventListener('pause', () => {
   const it = items[cur];
   if (previewPhase && it && video.currentTime < it.end - 0.05) stopPreview();
 });
+let linesShown = false; // 赤いガイド線を画面に出したままにするか
+function refreshOverlay() {
+  // シークやプレビュー停止のあとも、線は表示したままにする
+  const it = items[cur];
+  if (linesShown && it && it.lines && it.lines.length) drawOverlayLines(it);
+  else clearOverlay();
+}
 function stopPreview() {
   previewPhase = 0;
   previewCmts = [];
   commentHold = 0;
   video.pause();
   video.playbackRate = 1;
+  video.muted = false;
   hideBadge();
-  clearOverlay();
+  refreshOverlay();
 }
 function showBadge(t) { $('badge').textContent = t; $('badge').classList.remove('hidden'); }
 function hideBadge() { $('badge').classList.add('hidden'); }
@@ -1659,7 +1736,19 @@ function pickMime() {
 }
 
 let exporting = false;
-$('export').onclick = async () => {
+let exportPreviewOnly = false;      // 全体プレビュー(録画なし)として実行中か
+let previewAllStopRequested = false; // 全体プレビューの停止要求
+$('export').onclick = () => runExport(false);
+// 全体プレビュー: 書き出しと同じ流れ(タイトル→各動画→写真→診断)を、
+// ファイルを作らずに画面上で再生する。実行中にもう一度押すと停止
+$('previewAll').onclick = () => {
+  if (exporting) {
+    if (exportPreviewOnly) previewAllStopRequested = true;
+    return;
+  }
+  runExport(true);
+};
+async function runExport(previewOnly) {
   if (exporting) return;
   if (!items.length) { setStatus('先に動画を読み込んでください', 'err'); return; }
   for (const it of items) {
@@ -1669,12 +1758,16 @@ $('export').onclick = async () => {
     }
   }
   const mime = pickMime();
-  if (!mime) {
+  if (!mime && !previewOnly) {
     setStatus('❌ このブラウザは動画の書き出しに対応していません。SafariまたはChromeの新しいバージョンをお使いください', 'err');
     return;
   }
   exporting = true;
+  exportPreviewOnly = previewOnly;
+  previewAllStopRequested = false;
   $('export').disabled = true;
+  $('previewAll').textContent = previewOnly ? '⏹ プレビュー停止' : '🎬 全体プレビュー';
+  $('previewAll').disabled = !previewOnly; // 書き出し中は押せない(プレビュー中は停止ボタン)
   $('result').innerHTML = '';
   $('pbar').classList.remove('hidden');
   stopPreview();
@@ -1684,10 +1777,12 @@ $('export').onclick = async () => {
   let bgmStartTimer = null;
   let wakeLock = null;
   let keepaliveTimer = null;
+  let previewCanvas = null; // 全体プレビュー時に画面に重ねるキャンバス
   try { wakeLock = await navigator.wakeLock?.request('screen'); } catch (e) {}
   try {
     const ac = getAudioCtx();
     await ac.resume();
+    const runLabel = previewOnly ? '全体プレビュー再生' : '書き出し';
     const speed = parseFloat($('speed').value);
     const useZoom = $('zoom').checked;
     // ガイド線を先に全動画分計算
@@ -1702,12 +1797,26 @@ $('export').onclick = async () => {
     const ctx = cvs.getContext('2d');
     ctx.fillStyle = '#000';
     ctx.fillRect(0, 0, tw, th);
-    const stream = cvs.captureStream(30);
-    const recDest = ac.createMediaStreamDestination();
-    if (recDest.stream.getAudioTracks().length) {
+    if (previewOnly) {
+      // 全体プレビュー: 合成中のキャンバスをそのまま動画の上に重ねて見せる
+      cvs.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;z-index:6;background:#000;border-radius:10px';
+      document.querySelector('.videowrap').appendChild(cvs);
+      previewCanvas = cvs;
+    }
+    const stream = previewOnly ? null : cvs.captureStream(30);
+    const recDest = previewOnly ? null : ac.createMediaStreamDestination();
+    // 全体プレビューでは音をスピーカーへ、書き出しでは録音先へ流す
+    const audioOut = previewOnly ? ac.destination : recDest;
+    if (!previewOnly && recDest.stream.getAudioTracks().length) {
       stream.addTrack(recDest.stream.getAudioTracks()[0]);
     }
-    const recorder = new MediaRecorder(stream, {
+    // 全体プレビューでは録画しないので、録画機の代わりの空実装を使う
+    const recorder = previewOnly ? {
+      state: 'inactive',
+      onstop: null,
+      start() { this.state = 'recording'; },
+      stop() { this.state = 'inactive'; if (this.onstop) this.onstop(); }
+    } : new MediaRecorder(stream, {
       mimeType: mime,
       videoBitsPerSecond: 12_000_000,
       audioBitsPerSecond: 128_000
@@ -1729,7 +1838,7 @@ $('export').onclick = async () => {
         bgmGainNode = ac.createGain();
         bgmGainNode.gain.value = BGM_VOLUME;
         bgmSrc.connect(bgmGainNode);
-        bgmGainNode.connect(recDest);
+        bgmGainNode.connect(audioOut);
         // 再生開始は録画が始まってから(3秒後に流し始める)
       } catch (e) { bgmSrc = null; bgmGainNode = null; }
     }
@@ -1754,9 +1863,24 @@ $('export').onclick = async () => {
         }, 3000);
       });
     }
-    // 動画の最後5秒でBGMをだんだん小さくする(終わりまでの秒数を指定して予約)
+    if (previewOnly) {
+      // 全体プレビューでは録画データが出ないため、開始と同時に
+      // フック(タイトルのアニメーション開始・BGMの3秒後開始)を発火させる
+      const origStart = recorder.start.bind(recorder);
+      recorder.start = () => {
+        origStart();
+        if (!firstDataFired) {
+          firstDataFired = true;
+          for (const f of firstDataHooks) { try { f(); } catch (err) {} }
+        }
+      };
+    }
+    // 動画の最後5秒でBGMをだんだん小さくする(終わりまでの秒数を指定して
+    // 予約。最初の1回だけ有効)
+    let bgmFadeSet = false;
     const scheduleBgmFade = (delaySec) => {
-      if (!bgmGainNode) return;
+      if (!bgmGainNode || bgmFadeSet) return;
+      bgmFadeSet = true;
       const t = ac.currentTime + Math.max(0, delaySec);
       bgmGainNode.gain.setValueAtTime(BGM_VOLUME, t);
       bgmGainNode.gain.linearRampToValueAtTime(0.0001, t + 5);
@@ -1768,17 +1892,17 @@ $('export').onclick = async () => {
     // 入らない。コマの無い区間があると編集アプリ(KineMaster等)で
     // ストップフレームが押せない・黒く表示されるため、録画中は常に
     // 一定間隔でコマを送り続ける(直前の画面がそのまま静止表示される)
-    const vTrack = stream.getVideoTracks()[0];
+    const vTrack = previewOnly ? null : stream.getVideoTracks()[0];
     // 描いたコマを確実に録画へ送る(スマホでは自動取り込みが止まる
     // ことがあるため、描画のたびに明示的に送る)
     const pushFrame = () => {
-      try { if (vTrack.requestFrame) vTrack.requestFrame(); } catch (e) {}
+      try { if (vTrack && vTrack.requestFrame) vTrack.requestFrame(); } catch (e) {}
     };
     // 書き出し中の描画ループはrAFではなくタイマーで回す。タブが裏に
     // 回るとrAFは完全に止まり映像が欠ける(音声だけ残る)が、タイマー
     // なら間隔が1秒に落ちても続行でき、映像が途切れない
     const nextFrame = cb => setTimeout(cb, 33);
-    keepaliveTimer = setInterval(() => {
+    keepaliveTimer = previewOnly ? null : setInterval(() => {
       try {
         if (recorder.state !== 'recording') return;
         if (vTrack.requestFrame) vTrack.requestFrame();
@@ -1790,7 +1914,8 @@ $('export').onclick = async () => {
     const outroGroups = outroEnabled() ? OUTRO_GROUPS.filter(g => $(g.chk).checked) : [];
     const outroSec = (outroGroups.length ||
       (outroEnabled() && $('outroComment').value.trim())) ? OUTRO_SEC : 0;
-    const totalSec = introSec + outroSec +
+    const photoSec = ($('midOn').checked && midImage) ? PHOTO_SEC : 0;
+    const totalSec = introSec + outroSec + photoSec +
       items.reduce((s, it) => s + (it.end - it.start) * (1 + 1 / speed) +
         (it.comments || []).filter(c => c.t >= it.start && c.t <= it.end).length * COMMENT_SEC, 0);
     let doneSec = 0;
@@ -1803,12 +1928,17 @@ $('export').onclick = async () => {
       exportVideo.playsInline = true; exportVideo.preload = 'auto';
       exportSrcNode = ac.createMediaElementSource(exportVideo);
     }
+    // 動画の音は音量ノードを通して録音する(スロー再生では0にする。
+    // 「動画の音を入れる」がオフなら通常速度でも0)
+    const videoGain = ac.createGain();
+    videoGain.gain.value = $('videoSoundOn').checked ? 1 : 0;
     exportSrcNode.disconnect();
-    exportSrcNode.connect(recDest); // スピーカーには出さず録音のみ
+    exportSrcNode.connect(videoGain);
+    videoGain.connect(audioOut); // 書き出し時は録音のみ、プレビュー時はスピーカーへ
 
     if (introSec) {
       // タイトル画面: 画像を黒背景に収まるよう配置し、テキストを中央に重ねる
-      setStatus('<span class="spinner"></span>タイトル画面を書き出し中…');
+      setStatus('<span class="spinner"></span>タイトル画面を' + runLabel + '中…');
       let img = null;
       if (introImage) {
         const raw = await new Promise(res => {
@@ -1913,7 +2043,7 @@ $('export').onclick = async () => {
           }
           pushFrame();
           $('pfill').style.width = Math.min(100, Math.min(el, introSec) / totalSec * 100).toFixed(1) + '%';
-          if (el >= introSec) { doneSec += introSec; return resolve(); }
+          if (el >= introSec || previewAllStopRequested) { doneSec += introSec; return resolve(); }
           nextFrame(draw);
         };
         nextFrame(draw);
@@ -1921,6 +2051,7 @@ $('export').onclick = async () => {
     }
 
     for (let idx = 0; idx < items.length; idx++) {
+      if (previewAllStopRequested) break;
       const it = items[idx];
       const ev = exportVideo;
       // 読み込み失敗時は少し待って再試行(最大3回)
@@ -1969,6 +2100,8 @@ $('export').onclick = async () => {
             }
           }
         };
+        // スロー再生は無音(BGMのみ)。通常速度は設定に従う
+        videoGain.gain.value = (rate === 1 && $('videoSoundOn').checked) ? 1 : 0;
         seekTo(ev, it.start).then(() => {
           ev.playbackRate = rate;
           let started = false;
@@ -1978,8 +2111,8 @@ $('export').onclick = async () => {
               drawFrame();
               drawCommentBox(ctx, it, freezeCmt.text, tw, th, mapPt);
               pushFrame();
-              setStatus(`<span class="spinner"></span>書き出し中 (${idx + 1}/${items.length}本目・コメント表示)… 画面を閉じないでください`);
-              if (performance.now() >= freezeUntil) {
+              setStatus(`<span class="spinner"></span>${runLabel}中 (${idx + 1}/${items.length}本目・コメント表示)…`);
+              if (performance.now() >= freezeUntil || previewAllStopRequested) {
                 freezeCmt = null;
                 doneSec += COMMENT_SEC;
                 ev.play().then(() => nextFrame(draw)).catch(reject);
@@ -1988,7 +2121,7 @@ $('export').onclick = async () => {
               nextFrame(draw);
               return;
             }
-            if (ev.currentTime >= it.end || ev.ended) {
+            if (ev.currentTime >= it.end || ev.ended || previewAllStopRequested) {
               ev.pause();
               // 注意: ここで録画を一時停止してはいけない。iPhoneのSafariは
               // 一時停止すると動画の長さ情報を最初の区間分しか書き込まず、
@@ -2012,7 +2145,7 @@ $('export').onclick = async () => {
             }
             const prog = (doneSec + Math.max(0, ev.currentTime - it.start) / rate) / totalSec;
             $('pfill').style.width = Math.min(100, prog * 100).toFixed(1) + '%';
-            setStatus(`<span class="spinner"></span>書き出し中 (${idx + 1}/${items.length}本目・${label})… 画面を閉じないでください`);
+            setStatus(`<span class="spinner"></span>${runLabel}中 (${idx + 1}/${items.length}本目・${label})…` + (previewOnly ? '' : ' 画面を閉じないでください'));
             nextFrame(draw);
           };
           ev.play().then(() => nextFrame(draw)).catch(reject);
@@ -2023,17 +2156,60 @@ $('export').onclick = async () => {
         .filter(c => c.t >= it.start && c.t <= it.end)
         .sort((a, b) => a.t - b.t);
       await playPass(1, null, '通常速度');
-      if (idx === items.length - 1 && !outroSec) {
-        // 診断画面が無い場合は、最後のスロー再生の終わりに向けてフェード
+      if (idx === items.length - 1 && !outroSec && !photoSec) {
+        // 診断画面も写真も無い場合は、最後のスロー再生の終わりに向けてフェード
         scheduleBgmFade((it.end - it.start) / speed + cmts.length * COMMENT_SEC - 5);
       }
       await playPass(speed, it.lines, 'スロー', cmts);
     }
 
-    if (outroSec) {
+    if (photoSec && !previewAllStopRequested) {
+      // 動画とラウンド診断の間に写真を挟む(画面いっぱい・4秒)
+      setStatus('<span class="spinner"></span>写真ページを' + runLabel + '中…');
+      scheduleBgmFade(photoSec + outroSec - 5);
+      let mimg = null;
+      const raw = await new Promise(res => {
+        const im = new Image();
+        im.onload = () => res(im);
+        im.onerror = () => res(null); // 読めない写真は飛ばして続行
+        im.src = URL.createObjectURL(midImage);
+      });
+      if (raw) {
+        // 巨大写真を毎コマ描かないよう、先に出力サイズへ縮小しておく
+        const s2 = Math.min(1, Math.max(tw / raw.naturalWidth, th / raw.naturalHeight));
+        const pc = document.createElement('canvas');
+        pc.width = Math.max(2, Math.round(raw.naturalWidth * s2));
+        pc.height = Math.max(2, Math.round(raw.naturalHeight * s2));
+        pc.getContext('2d').drawImage(raw, 0, 0, pc.width, pc.height);
+        mimg = pc;
+      }
+      if (mimg) {
+        const t0p = performance.now();
+        await new Promise(resolve => {
+          const draw = () => {
+            const el = (performance.now() - t0p) / 1000;
+            ctx.fillStyle = '#000';
+            ctx.fillRect(0, 0, tw, th);
+            ctx.save();
+            ctx.globalAlpha = Math.min(1, el / 0.5); // ふわっと表示
+            const s2 = Math.max(tw / mimg.width, th / mimg.height);
+            const w = mimg.width * s2, h = mimg.height * s2;
+            ctx.drawImage(mimg, (tw - w) / 2, (th - h) / 2, w, h);
+            ctx.restore();
+            pushFrame();
+            $('pfill').style.width = Math.min(100, (doneSec + Math.min(el, photoSec)) / totalSec * 100).toFixed(1) + '%';
+            if (el >= photoSec || previewAllStopRequested) { doneSec += photoSec; return resolve(); }
+            nextFrame(draw);
+          };
+          nextFrame(draw);
+        });
+      }
+    }
+
+    if (outroSec && !previewAllStopRequested) {
       // 最後に「ラウンド診断」画面(5つ星評価+総評コメント)を付ける。
       // 星は左から順にパッパッと点いていく
-      setStatus('<span class="spinner"></span>診断結果の画面を書き出し中…');
+      setStatus('<span class="spinner"></span>診断結果の画面を' + runLabel + '中…');
       scheduleBgmFade(outroSec - 5); // 診断画面の最後5秒でBGMをフェードアウト
       const comment = $('outroComment').value.replace(/\s+$/, '');
       const t0o = performance.now();
@@ -2125,7 +2301,7 @@ $('export').onclick = async () => {
           ctx.textBaseline = 'alphabetic';
           pushFrame();
           $('pfill').style.width = Math.min(100, (doneSec + Math.min(el, outroSec)) / totalSec * 100).toFixed(1) + '%';
-          if (el >= outroSec) { doneSec += outroSec; return resolve(); }
+          if (el >= outroSec || previewAllStopRequested) { doneSec += outroSec; return resolve(); }
           nextFrame(draw);
         };
         nextFrame(draw);
@@ -2137,6 +2313,13 @@ $('export').onclick = async () => {
     clearInterval(keepaliveTimer);
     recorder.stop();
     await stopped;
+    if (previewOnly) {
+      $('pfill').style.width = '100%';
+      setStatus(previewAllStopRequested
+        ? '⏹ 全体プレビューを停止しました'
+        : '✅ 全体プレビューを最後まで再生しました。この内容で「動画を作成する」を押せば同じ動画ができます', 'ok');
+      return;
+    }
     const ext = mime.startsWith('video/mp4') ? 'mp4' : 'webm';
     let blob = new Blob(chunks, { type: mime.split(';')[0] });
     // MediaRecorderのMP4はフラグメント形式で長さ情報が壊れており、
@@ -2152,7 +2335,9 @@ $('export').onclick = async () => {
     }
     const url = URL.createObjectURL(blob);
     const stamp = new Date().toISOString().replace(/[-:T]/g, '').slice(0, 14);
-    const name = `スイング連結_${stamp}.${ext}`;
+    // タイトルが入力されていればファイル名に使う(ファイル名に使えない文字は除く)
+    const titleRaw = $('videoTitle').value.trim().replace(/[\\/:*?"<>|]/g, '');
+    const name = `${titleRaw || 'スイング連結'}_${stamp}.${ext}`;
     let viewInfo = items
       .filter(it => it.viewUsed)
       .map(it => `${it.file.name} → ${it.viewUsed}`).join(' / ');
@@ -2174,17 +2359,21 @@ $('export').onclick = async () => {
     $('result').innerHTML = viewInfo +
       `<a class="dl" href="${url}" download="${name}">⬇ 完成動画を保存 (${(blob.size / 1048576).toFixed(1)}MB)</a>`;
   } catch (e) {
-    setStatus('❌ 書き出しに失敗しました: ' + e.message, 'err');
+    setStatus('❌ ' + (previewOnly ? '全体プレビュー' : '書き出し') + 'に失敗しました: ' + e.message, 'err');
   } finally {
     exporting = false;
+    exportPreviewOnly = false;
     clearInterval(keepaliveTimer);
     clearTimeout(bgmStartTimer);
     try { if (bgmSrc) { bgmSrc.stop(); bgmSrc.disconnect(); } } catch (e) {}
+    if (previewCanvas && previewCanvas.parentNode) previewCanvas.remove();
     $('export').disabled = false;
+    $('previewAll').disabled = false;
+    $('previewAll').textContent = '🎬 全体プレビュー';
     $('pbar').classList.add('hidden');
     try { wakeLock?.release(); } catch (e) {}
   }
-};
+}
 
 // 左下の再生/一時停止ボタン(中央の再生マークを消したので端に用意)
 $('cornerPlay').addEventListener('click', (e) => {
@@ -2207,14 +2396,35 @@ function syncSeekbar() {
 video.addEventListener('loadedmetadata', syncSeekbar);
 video.addEventListener('timeupdate', syncSeekbar);
 video.addEventListener('seeked', syncSeekbar);
+// シーク要求は貯めて、前のシークが終わってから次を実行する。
+// ドラッグ中に大量のシークを積み上げるとカクつくため、常に最新の
+// 位置だけを追いかける(ドラッグ中は高速シークが使える端末では使う)
+let scrubTarget = null, scrubBusy = false;
+function execScrubSeek() {
+  if (scrubTarget == null) { scrubBusy = false; return; }
+  const t = scrubTarget;
+  scrubTarget = null;
+  scrubBusy = true;
+  try {
+    if (scrubbing && video.fastSeek) video.fastSeek(t);
+    else video.currentTime = t;
+  } catch (e) { video.currentTime = t; }
+}
+video.addEventListener('seeked', execScrubSeek);
 seekbar.addEventListener('input', () => {
   scrubbing = true;
   stopPreview();
   video.pause();
-  video.currentTime = parseFloat(seekbar.value);
+  scrubTarget = parseFloat(seekbar.value);
+  if (!scrubBusy) execScrubSeek();
   $('curTime').textContent = fmt(parseFloat(seekbar.value));
 });
-seekbar.addEventListener('change', () => { scrubbing = false; });
+seekbar.addEventListener('change', () => {
+  scrubbing = false;
+  // 指を離したら正確な位置に合わせる
+  scrubTarget = parseFloat(seekbar.value);
+  if (!scrubBusy) execScrubSeek();
+});
 $('playBtn').addEventListener('click', () => {
   if (video.paused) video.play(); else video.pause();
 });
@@ -2239,6 +2449,7 @@ restoreSession();
 restoreIntro();
 restoreBgmCustom();
 restoreOutro();
+restoreMid();
 
 // 開発検証用フック
 window.DEBUG_FN = { loadInto, seekTo, seekFrame, waitMeta };
