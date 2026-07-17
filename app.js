@@ -1028,6 +1028,7 @@ $('bgmFile').addEventListener('change', async e => {
   if (!e.target.files.length) return;
   stopAudition();
   setBgmCustom(e.target.files[0], true);
+  bgmBufCache = { key: null, buf: null }; // 曲が変わったのでキャッシュ無効化
   e.target.value = '';
   setStatus('✅ 音楽を取り込みました。「🔊 試聴」で確認できます(著作権のある曲の扱いにはご注意ください)', 'ok');
   try {
@@ -1109,6 +1110,23 @@ $('videoTitle').addEventListener('input', () => {
 try {
   if (localStorage.getItem('videoSound') === '0') $('videoSoundOn').checked = false;
   $('videoTitle').value = localStorage.getItem('videoTitle') || '';
+} catch (e) {}
+
+// ---------------- テロップ(場面コメント)の見た目設定 ----------------
+function saveTelop() {
+  try {
+    localStorage.setItem('telopOutline', $('telopOutline').checked ? '1' : '0');
+    localStorage.setItem('telopOutlineColor', $('telopOutlineColor').value);
+    localStorage.setItem('telopRandom', $('telopRandom').checked ? '1' : '0');
+  } catch (e) {}
+}
+$('telopOutline').addEventListener('change', saveTelop);
+$('telopOutlineColor').addEventListener('input', saveTelop);
+$('telopRandom').addEventListener('change', saveTelop);
+try {
+  if (localStorage.getItem('telopOutline') === '1') $('telopOutline').checked = true;
+  $('telopOutlineColor').value = localStorage.getItem('telopOutlineColor') || '#000000';
+  if (localStorage.getItem('telopRandom') === '1') $('telopRandom').checked = true;
 } catch (e) {}
 
 // ---------------- 評価画面(スイング診断) ----------------
@@ -1217,18 +1235,42 @@ $('addComment').onclick = () => {
     return;
   }
   $('commentText').value = '';
+  setCommentDlgImg(null);
   $('commentDlgTime').textContent = '(' + fmtShort(t) + 'の場面)';
   $('commentDialog').classList.remove('hidden');
   $('commentText').focus();
 };
+// コメントダイアログで選んだ「左に入れる画像」(追加時にコメントへ持たせる)
+let commentDlgImg = null;
+function setCommentDlgImg(f) {
+  commentDlgImg = f || null;
+  const t = $('commentImgThumb');
+  if (commentDlgImg) {
+    t.src = URL.createObjectURL(commentDlgImg);
+    t.classList.remove('hidden');
+    $('commentImgClear').classList.remove('hidden');
+    $('commentImgPick').textContent = '🖼 画像を変更';
+  } else {
+    t.classList.add('hidden');
+    $('commentImgClear').classList.add('hidden');
+    $('commentImgPick').textContent = '🖼 左に画像を入れる';
+  }
+}
+$('commentImgPick').onclick = () => $('commentImgFile').click();
+$('commentImgFile').addEventListener('change', e => {
+  if (e.target.files.length) setCommentDlgImg(e.target.files[0]);
+  e.target.value = '';
+});
+$('commentImgClear').onclick = () => setCommentDlgImg(null);
 $('commentCancel').onclick = () => $('commentDialog').classList.add('hidden');
 $('commentSave').onclick = () => {
   const it = items[cur];
   const text = $('commentText').value.trim();
   $('commentDialog').classList.add('hidden');
-  if (!it || !text) return;
-  (it.comments = it.comments || []).push({ t: video.currentTime, text });
+  if (!it || (!text && !commentDlgImg)) return;
+  (it.comments = it.comments || []).push({ t: video.currentTime, text, img: commentDlgImg || null });
   it.comments.sort((a, b) => a.t - b.t);
+  commentDlgImg = null;
   renderComments();
   saveSession();
   setStatus('✅ コメントを追加しました。完成動画とプレビューのスロー再生で、この場面が' + COMMENT_SEC + '秒止まって表示されます', 'ok');
@@ -1254,62 +1296,164 @@ function renderComments() {
 }
 // コメントの吹き出しを描く。W/H=描画先サイズ、mapPt=元動画座標→描画先座標
 // の変換(書き出しのズーム用、プレビューではnull)
-function drawCommentBox(ctx2, it, text, W, H, mapPt) {
+// コメント(idx番目)ごとに安定した見た目を返す(同じコメントは毎回同じ)
+function telopStyle(idx) {
+  let s = ((idx + 1) * 2654435761) % 2147483647;
+  if (s <= 0) s += 2147483646;
+  const rnd = () => { s = (s * 16807) % 2147483647; return (s - 1) / 2147483646; };
+  const colors = ['#ffffff', '#ffe14d', '#4dd2ff', '#ff6ec7', '#8dff6e', '#ffa64d', '#ff5555'];
+  const sizes = [0.06, 0.075, 0.09, 0.11];
+  const positions = ['tl', 'tr', 'bl', 'br', 'tc', 'bc'];
+  const anims = ['pop', 'fade', 'slide', 'bounce'];
+  return {
+    color: colors[Math.floor(rnd() * colors.length)],
+    sizeRatio: sizes[Math.floor(rnd() * sizes.length)],
+    pos: positions[Math.floor(rnd() * positions.length)],
+    anim: anims[Math.floor(rnd() * anims.length)]
+  };
+}
+// テロップ(場面コメント)を描く。cmt={text, idx, _imgEl}、phase=登場
+// アニメーションの進み具合(0→1、省略時は1で静止表示)
+function drawCommentBox(ctx2, it, cmt, W, H, mapPt, phase) {
+  const text = (cmt && cmt.text) || '';
+  const cmtIdx = (cmt && cmt.idx) || 0;
+  const imgEl = cmt && cmt._imgEl;
+  phase = (phase == null) ? 1 : Math.max(0, Math.min(1, phase));
+  const outline = $('telopOutline') && $('telopOutline').checked;
+  const outlineColor = ($('telopOutlineColor') && $('telopOutlineColor').value) || '#000000';
+  const random = $('telopRandom') && $('telopRandom').checked;
+  const st = random ? telopStyle(cmtIdx) : null;
   const pad = W * 0.03;
-  // 人物の全身の範囲(姿勢の33点)に、スイング中に腕やクラブが伸びる
-  // 余裕を足して「人物ゾーン」とし、その外側の空いた側に吹き出しを置く
-  let minX = W * 0.35, maxX = W * 0.65; // 姿勢が取れない動画では中央を人物とみなす
-  if (it.posePts) {
-    minX = Infinity; maxX = -Infinity;
-    for (const p of it.posePts) {
-      const x = mapPt ? mapPt([p[0], p[1]])[0] : p[0];
-      if (x < minX) minX = x;
-      if (x > maxX) maxX = x;
-    }
-    const reach = (maxX - minX) * 0.45; // 腕+クラブの伸びる分
-    minX -= reach;
-    maxX += reach;
-  }
-  const leftGap = Math.max(0, minX - pad * 2);
-  const rightGap = Math.max(0, W - maxX - pad * 2);
-  const side = rightGap >= leftGap ? 'right' : 'left';
-  const gap = Math.max(leftGap, rightGap);
-  // 空きスペースに収まる幅に(狭すぎる場合は最低幅を確保し、文字を縮小)
-  const boxW = Math.min(W * 0.46, Math.max(W * 0.22, gap));
-  const x0 = side === 'left' ? pad : W - pad - boxW;
-  const fsC = Math.max(14, Math.round(H * 0.065 * Math.min(1, boxW / (W * 0.34))));
+  const fsC = Math.max(14, Math.round(H * (st ? st.sizeRatio : 0.065)));
   ctx2.save();
   ctx2.font = 'bold ' + fsC + 'px sans-serif';
-  // 幅に収まるよう文字単位で折り返す
-  const maxW = boxW - fsC;
-  const lines = [];
-  for (const para of String(text).split('\n')) {
-    let curLine = '';
-    for (const ch of para) {
-      if (curLine && ctx2.measureText(curLine + ch).width > maxW) { lines.push(curLine); curLine = ch; }
-      else curLine += ch;
+
+  const wrapAt = (maxW) => {
+    const out = [];
+    for (const para of String(text).split('\n')) {
+      let cur = '';
+      for (const ch of para) {
+        if (cur && ctx2.measureText(cur + ch).width > maxW) { out.push(cur); cur = ch; }
+        else cur += ch;
+      }
+      out.push(cur);
     }
-    lines.push(curLine);
-  }
+    return out;
+  };
   const lh = fsC * 1.35;
-  const boxH = lines.length * lh + fsC * 0.9;
-  // 上の角に置く(体や足と重なりにくい)
-  const y0 = H * 0.06;
-  ctx2.globalAlpha = 0.62;
-  ctx2.fillStyle = '#000';
-  ctx2.beginPath();
-  const r = fsC * 0.45;
-  if (ctx2.roundRect) ctx2.roundRect(x0, y0, boxW, boxH, r);
-  else ctx2.rect(x0, y0, boxW, boxH);
-  ctx2.fill();
-  ctx2.globalAlpha = 1;
-  ctx2.fillStyle = '#fff';
-  ctx2.textAlign = 'left';
-  ctx2.textBaseline = 'middle';
-  lines.forEach((L, i) => {
-    if (L) ctx2.fillText(L, x0 + fsC * 0.5, y0 + fsC * 0.45 + lh * i + lh / 2);
-  });
+
+  // 文字色・背景濃さ・箱幅を決める
+  let boxW, textColor, boxAlpha;
+  if (st) {
+    boxW = Math.min(W * 0.5, Math.max(W * 0.28, W * 0.42));
+    textColor = st.color; boxAlpha = 0.35;
+  } else {
+    boxW = W * 0.44; textColor = '#ffffff'; boxAlpha = 0.62;
+  }
+  const lines = text ? wrapAt(boxW - fsC) : [];
+  const boxH = Math.max(fsC * 1.6, lines.length * lh + fsC * 0.9);
+
+  // 左に入れる画像(コメントの左に正方形で表示)
+  const imgSide = imgEl ? boxH : 0;
+  const gap2 = imgEl ? fsC * 0.4 : 0;
+  const hasBox = lines.length > 0;
+  const unitW = imgSide + gap2 + (hasBox ? boxW : 0);
+  const unitH = boxH;
+
+  // 配置(左上のunitX0, y0)を決める
+  let unitX0, y0;
+  const left = pad, right = W - pad - unitW, cxu = (W - unitW) / 2;
+  const top = H * 0.05, bottom = H - unitH - H * 0.05;
+  if (st) {
+    const map = { tl: [left, top], tr: [right, top], bl: [left, bottom],
+      br: [right, bottom], tc: [cxu, top], bc: [cxu, bottom] };
+    [unitX0, y0] = map[st.pos] || [cxu, top];
+  } else {
+    // 人物のいない側の上の角
+    let minX = W * 0.35, maxX = W * 0.65;
+    if (it.posePts) {
+      minX = Infinity; maxX = -Infinity;
+      for (const p of it.posePts) {
+        const x = mapPt ? mapPt([p[0], p[1]])[0] : p[0];
+        if (x < minX) minX = x;
+        if (x > maxX) maxX = x;
+      }
+      const reach = (maxX - minX) * 0.45;
+      minX -= reach; maxX += reach;
+    }
+    const leftGap = Math.max(0, minX - pad * 2);
+    const rightGap = Math.max(0, W - maxX - pad * 2);
+    unitX0 = (rightGap >= leftGap) ? right : left;
+    y0 = H * 0.06;
+  }
+  const imgX = unitX0, boxX = unitX0 + imgSide + gap2;
+
+  // 登場アニメーション(ユニット全体の中心を基準に変形)
+  const cxb = unitX0 + unitW / 2, cyb = y0 + unitH / 2;
+  const anim = st ? st.anim : 'fade';
+  const e = 1 - Math.pow(1 - phase, 3);
+  ctx2.globalAlpha = e;
+  ctx2.translate(cxb, cyb);
+  if (anim === 'pop') { const k = 0.6 + 0.4 * e; ctx2.scale(k, k); }
+  else if (anim === 'bounce') { const k = phase < 1 ? (0.5 + 0.7 * e) : 1; ctx2.scale(k, k); }
+  else if (anim === 'slide') { ctx2.translate(W * 0.25 * (1 - e), 0); }
+  ctx2.translate(-cxb, -cyb);
+
+  // 左の画像(正方形に収める。白い縁を付けて見やすく)
+  if (imgEl) {
+    const iw = imgEl.width || imgEl.naturalWidth, ih = imgEl.height || imgEl.naturalHeight;
+    const s2 = Math.min(imgSide / iw, imgSide / ih);
+    const dw = iw * s2, dh = ih * s2;
+    const ix = imgX + (imgSide - dw) / 2, iy = y0 + (imgSide - dh) / 2;
+    ctx2.globalAlpha = e;
+    ctx2.fillStyle = '#fff';
+    const br = fsC * 0.3;
+    ctx2.beginPath();
+    if (ctx2.roundRect) ctx2.roundRect(imgX - 2, y0 - 2, imgSide + 4, imgSide + 4, br);
+    else ctx2.rect(imgX - 2, y0 - 2, imgSide + 4, imgSide + 4);
+    ctx2.fill();
+    ctx2.drawImage(imgEl, ix, iy, dw, dh);
+  }
+
+  // 文字の箱
+  if (hasBox) {
+    ctx2.globalAlpha = e * boxAlpha;
+    ctx2.fillStyle = '#000';
+    ctx2.beginPath();
+    const r = fsC * 0.45;
+    if (ctx2.roundRect) ctx2.roundRect(boxX, y0, boxW, boxH, r);
+    else ctx2.rect(boxX, y0, boxW, boxH);
+    ctx2.fill();
+    // 文字(縁取りは文字の下に)
+    ctx2.globalAlpha = e;
+    ctx2.textAlign = 'left';
+    ctx2.textBaseline = 'middle';
+    if (outline) {
+      ctx2.strokeStyle = outlineColor;
+      ctx2.lineWidth = Math.max(2, fsC * 0.16);
+      ctx2.lineJoin = 'round';
+    }
+    const ty0 = y0 + (boxH - lines.length * lh) / 2 + lh / 2;
+    lines.forEach((L, i) => {
+      if (!L) return;
+      const tx = boxX + fsC * 0.5, ty = ty0 + lh * i;
+      if (outline) ctx2.strokeText(L, tx, ty);
+      ctx2.fillStyle = textColor;
+      ctx2.fillText(L, tx, ty);
+    });
+  }
   ctx2.restore();
+}
+// コメントの画像(Blob)を一度だけデコードして c._imgEl にキャッシュする
+function ensureCommentImg(c) {
+  return new Promise(res => {
+    if (!c || !c.img) { res(null); return; }
+    if (c._imgEl) { res(c._imgEl); return; }
+    const im = new Image();
+    im.onload = () => { c._imgEl = im; res(im); };
+    im.onerror = () => res(null);
+    im.src = URL.createObjectURL(c.img);
+  });
 }
 
 // ---------------- 線の即時確認 ----------------
@@ -1540,7 +1684,10 @@ document.querySelectorAll('[data-adj]').forEach(btn => {
   };
 });
 
-$('preview').onclick = async () => {
+// このスイングのプレビュー: プレビューエンジンを今のスイング1本だけで
+// 動かす。通常速度→スローが1本の通しシークバーになり、途中シークもできる
+$('preview').onclick = () => {
+  if (exporting) { if (exportPreviewOnly) previewAllStopRequested = true; return; }
   const it = items[cur];
   if (!it || it.start == null || it.end == null) {
     setStatus('先にスイングの開始・終了位置を設定してください', 'err'); return;
@@ -1548,15 +1695,7 @@ $('preview').onclick = async () => {
   if (it.end <= it.start) {
     setStatus('終了位置は開始位置より後にしてください', 'err'); return;
   }
-  await ensureLines(it);
-  setStatus('');
-  previewPhase = 1;
-  video.playbackRate = 1;
-  video.currentTime = it.start;
-  video.muted = !$('videoSoundOn').checked; // 「動画の音」設定に従う
-  showBadge('通常速度');
-  clearOverlay(); // 通常速度パートは線なし(完成動画と同じ)
-  video.play();
+  runExport(true, 0, cur);
 };
 let phaseSwitching = false; // スロー切り替え中のシークによるpauseを無視する
 let previewCmts = [];       // スローでこれから止まる場面
@@ -1568,8 +1707,10 @@ function advancePreviewPhase() {
     previewPhase = 2;
     phaseSwitching = true;
     previewCmts = (it.comments || [])
+      .map((c, i) => ({ ...c, idx: i }))
       .filter(c => c.t >= it.start && c.t <= it.end)
       .sort((a, b) => a.t - b.t);
+    previewCmts.forEach(ensureCommentImg); // 左の画像を先にデコード
     const rate = parseFloat($('speed').value);
     video.currentTime = it.start;
     video.muted = true; // スロー再生は動画の音を出さない
@@ -1600,8 +1741,17 @@ video.addEventListener('timeupdate', () => {
     const c = previewCmts.shift();
     const token = commentHold = Date.now();
     video.pause();
-    drawOverlayLines(items[cur]);
-    drawCommentBox(overlayCanvas.getContext('2d'), it, c.text, overlayCanvas.width, overlayCanvas.height, null);
+    // 登場アニメーションを描く(停止中の間ずっと更新)
+    const octx = overlayCanvas.getContext('2d');
+    const holdStart = performance.now();
+    const animateTelop = () => {
+      if (commentHold !== token) return; // 中断されたら止める
+      drawOverlayLines(items[cur]);
+      const el = (performance.now() - holdStart) / 1000;
+      drawCommentBox(octx, it, c, overlayCanvas.width, overlayCanvas.height, null, el / 0.45);
+      if (el < COMMENT_SEC) requestAnimationFrame(animateTelop);
+    };
+    requestAnimationFrame(animateTelop);
     setTimeout(() => {
       if (commentHold !== token) return; // その間に停止・再操作されていたら何もしない
       commentHold = 0;
@@ -1738,6 +1888,59 @@ function pickMime() {
 let exporting = false;
 let exportPreviewOnly = false;      // 全体プレビュー(録画なし)として実行中か
 let previewAllStopRequested = false; // 全体プレビューの停止要求
+let previewAllPaused = false;        // 全体プレビューの一時停止中か
+let previewVideoActive = false;      // 今、動画パス(exportVideo)を再生中か
+let previewCurIdx = -1;              // 今プレビュー中のスイング(items内の番号)
+let previewDrawCurrent = null;       // 今のexportVideoフレームを合成画面へ描く関数
+// 今再生中の動画パスの通し範囲(この中なら作り直さずその場でシークできる)
+let previewPassT0 = 0, previewPassEnd = 0, previewPassRate = 1, previewPassVStart = 0;
+let previewCanvas = null;            // 全体プレビュー時に画面に重ねるキャンバス
+let previewSeekTotal = 0;            // 通しシークバーの最大値(コメント停止除く)
+let previewTL = null;                // 通し位置↔映像時刻の対応表
+let bgmBufCache = { key: null, buf: null }; // デコード済みBGMの使い回し
+let pendingRestartAt = -1;           // 指を離した位置から再生し直すための通し時間
+// 通し位置T(秒)が動画パスなら {idx, videoTime} を返す(それ以外はnull)
+function compositeToVideo(T) {
+  if (!previewTL) return null;
+  for (const v of previewTL.vids) {
+    if (T >= v.nT0 && T < v.nT0 + v.nd) return { idx: v.idx, videoTime: v.start + (T - v.nT0) };
+    if (T >= v.sT0 && T < v.sT0 + v.sd) return { idx: v.idx, videoTime: v.start + (T - v.sT0) * previewTL.speed };
+  }
+  return null;
+}
+let previewScrubbing = false;        // 全体プレビュー中にシークバーで手動移動中か
+let previewScrubBusy = false, previewScrubTarget = null;
+let scrubDrawTimer = 0;
+// スクラブ中は、seekedイベント頼みにせず一定間隔で描き続ける(端末により
+// seekedのタイミングが遅い/来ないことがあり、映像が更新されないため)
+function startScrubDraw() {
+  if (scrubDrawTimer) return;
+  const loop = () => {
+    if (!previewScrubbing) { scrubDrawTimer = 0; return; }
+    if (previewDrawCurrent) { try { previewDrawCurrent(); } catch (e) {} }
+    scrubDrawTimer = setTimeout(loop, 40);
+  };
+  loop();
+}
+function execPreviewScrub() {
+  if (previewScrubTarget == null) { previewScrubBusy = false; return; }
+  const t = previewScrubTarget; previewScrubTarget = null; previewScrubBusy = true;
+  const onSeeked = () => {
+    exportVideo.removeEventListener('seeked', onSeeked);
+    if (previewDrawCurrent) { try { previewDrawCurrent(); } catch (e) {} }
+    execPreviewScrub(); // 溜まった最新位置を続けて処理
+  };
+  exportVideo.addEventListener('seeked', onSeeked);
+  try { exportVideo.currentTime = t; } catch (e) { previewScrubBusy = false; }
+}
+// 一時停止中は時間を止める「仮想クロック」。アニメーションやコメント
+// 停止の残り時間が、再開時に飛ばずに続きから進むようにする
+let vpAccum = 0, vpRealPauseStart = 0;
+function vpNow() {
+  let t = performance.now() - vpAccum;
+  if (previewAllPaused) t -= (performance.now() - vpRealPauseStart);
+  return t;
+}
 $('export').onclick = () => runExport(false);
 // 全体プレビュー: 書き出しと同じ流れ(タイトル→各動画→写真→診断)を、
 // ファイルを作らずに画面上で再生する。実行中にもう一度押すと停止
@@ -1748,7 +1951,10 @@ $('previewAll').onclick = () => {
   }
   runExport(true);
 };
-async function runExport(previewOnly) {
+async function runExport(previewOnly, startAt, soloIdx) {
+  startAt = startAt || 0; // 全体プレビューを途中(通し時間)から始める場合の位置
+  soloIdx = (soloIdx == null) ? -1 : soloIdx; // >=0なら そのスイング1本だけ(タイトル等なし)
+  const solo = soloIdx >= 0;
   if (exporting) return;
   if (!items.length) { setStatus('先に動画を読み込んでください', 'err'); return; }
   for (const it of items) {
@@ -1765,6 +1971,15 @@ async function runExport(previewOnly) {
   exporting = true;
   exportPreviewOnly = previewOnly;
   previewAllStopRequested = false;
+  previewAllPaused = false;
+  previewVideoActive = false;
+  previewCurIdx = -1;
+  previewScrubbing = false;
+  previewScrubBusy = false;
+  previewScrubTarget = null;
+  previewDrawCurrent = null;
+  pendingRestartAt = -1;
+  vpAccum = 0;
   $('export').disabled = true;
   $('previewAll').textContent = previewOnly ? '⏹ プレビュー停止' : '🎬 全体プレビュー';
   $('previewAll').disabled = !previewOnly; // 書き出し中は押せない(プレビュー中は停止ボタン)
@@ -1777,12 +1992,12 @@ async function runExport(previewOnly) {
   let bgmStartTimer = null;
   let wakeLock = null;
   let keepaliveTimer = null;
-  let previewCanvas = null; // 全体プレビュー時に画面に重ねるキャンバス
+  previewCanvas = null; // 全体プレビュー時に画面に重ねるキャンバス(モジュール変数)
   try { wakeLock = await navigator.wakeLock?.request('screen'); } catch (e) {}
   try {
     const ac = getAudioCtx();
     await ac.resume();
-    const runLabel = previewOnly ? '全体プレビュー再生' : '書き出し';
+    const runLabel = solo ? 'プレビュー' : (previewOnly ? '全体プレビュー再生' : '書き出し');
     const speed = parseFloat($('speed').value);
     const useZoom = $('zoom').checked;
     // ガイド線を先に全動画分計算
@@ -1802,6 +2017,47 @@ async function runExport(previewOnly) {
       cvs.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;z-index:6;background:#000;border-radius:10px';
       document.querySelector('.videowrap').appendChild(cvs);
       previewCanvas = cvs;
+      // ⏸ 一時停止: 音と映像を止め、プレビュー画面をどかして下の編集画面を
+      // 触れるようにする。▶ 再開で続きから
+      $('previewAllPause').classList.remove('hidden');
+      $('previewAllPause').textContent = '⏸ 一時停止';
+      $('previewAllPause').onclick = async () => {
+        if (!exporting || !exportPreviewOnly) return;
+        previewAllPaused = !previewAllPaused;
+        $('previewAllPause').textContent = previewAllPaused ? '▶ 再開' : '⏸ 一時停止';
+        if (previewAllPaused) {
+          vpRealPauseStart = performance.now();
+          try { await ac.suspend(); } catch (e) {}
+          if (previewVideoActive) {
+            // 動画パス中の一時停止: 下の編集画面を「今プレビュー中のスイング
+            // の同じ場面」に合わせてから、プレビュー画面をどける。これをしないと
+            // 選択中の別スイング(別の場面)が見えてしまう
+            const t = exportVideo.currentTime;
+            try { exportVideo.pause(); } catch (e) {}
+            if (previewCurIdx >= 0 && previewCurIdx !== cur) select(previewCurIdx, true);
+            // 下の編集用動画を同じ場面へ「シークし終えてから」プレビュー画面を
+            // どける。先に隠すと、まだ移動前の別フレームが一瞬見えてしまう
+            try {
+              video.pause();
+              if (isFinite(t)) await seekTo(video, t);
+            } catch (e) {}
+            // 重ね描きに残っていた古いガイド線を消してきれいな画面にする
+            linesShown = false;
+            clearOverlay();
+            if (previewCanvas) previewCanvas.style.display = 'none';
+            setStatus('⏸ 一時停止中です。線の調整・コメント追加・カット位置の変更ができます(変更は、まだ再生していない部分に反映されます)。「▶ 再開」で続きから再生します', 'ok');
+          } else {
+            // タイトル/写真/診断の途中: 合成画面を止めたまま見せる
+            setStatus('⏸ 一時停止中です。「▶ 再開」で続きから再生します', 'ok');
+          }
+        } else {
+          vpAccum += performance.now() - vpRealPauseStart;
+          if (previewCanvas) previewCanvas.style.display = '';
+          try { await ac.resume(); } catch (e) {}
+          if (previewVideoActive) { try { exportVideo.play(); } catch (e) {} }
+          setStatus('<span class="spinner"></span>全体プレビュー再生中…');
+        }
+      };
     }
     const stream = previewOnly ? null : cvs.captureStream(30);
     const recDest = previewOnly ? null : ac.createMediaStreamDestination();
@@ -1827,11 +2083,18 @@ async function runExport(previewOnly) {
     const bgmKey = $('bgm').value;
     if ((bgmKey && BGM_FILES[bgmKey]) || (bgmKey === 'custom' && bgmCustomFile)) {
       try {
-        setStatus('<span class="spinner"></span>音楽を読み込んでいます…');
-        const ab = bgmKey === 'custom'
-          ? await bgmCustomFile.arrayBuffer()
-          : await (await fetch(BGM_FILES[bgmKey])).arrayBuffer();
-        const buf = await ac.decodeAudioData(ab);
+        let buf;
+        // 一度デコードした曲は使い回す(全体プレビューで飛ぶたびに読み直さない)
+        if (bgmBufCache.key === bgmKey && bgmBufCache.buf) {
+          buf = bgmBufCache.buf;
+        } else {
+          setStatus('<span class="spinner"></span>音楽を読み込んでいます…');
+          const ab = bgmKey === 'custom'
+            ? await bgmCustomFile.arrayBuffer()
+            : await (await fetch(BGM_FILES[bgmKey])).arrayBuffer();
+          buf = await ac.decodeAudioData(ab);
+          bgmBufCache = { key: bgmKey, buf };
+        }
         bgmSrc = ac.createBufferSource();
         bgmSrc.buffer = buf;
         bgmSrc.loop = true;
@@ -1910,15 +2173,37 @@ async function runExport(previewOnly) {
       } catch (e) { /* 停止直後のrace等は無視 */ }
     }, 100);
 
-    const introSec = introEnabled() ? INTRO_SEC : 0;
-    const outroGroups = outroEnabled() ? OUTRO_GROUPS.filter(g => $(g.chk).checked) : [];
+    // このスイングだけのプレビュー(soloIdx>=0)ではタイトル・写真・診断は付けない
+    const introSec = (!solo && introEnabled()) ? INTRO_SEC : 0;
+    const outroGroups = (!solo && outroEnabled()) ? OUTRO_GROUPS.filter(g => $(g.chk).checked) : [];
     const outroSec = (outroGroups.length ||
-      (outroEnabled() && $('outroComment').value.trim())) ? OUTRO_SEC : 0;
-    const photoSec = ($('midOn').checked && midImage) ? PHOTO_SEC : 0;
+      (!solo && outroEnabled() && $('outroComment').value.trim())) ? OUTRO_SEC : 0;
+    const photoSec = (!solo && $('midOn').checked && midImage) ? PHOTO_SEC : 0;
     const totalSec = introSec + outroSec + photoSec +
       items.reduce((s, it) => s + (it.end - it.start) * (1 + 1 / speed) +
         (it.comments || []).filter(c => c.t >= it.start && c.t <= it.end).length * COMMENT_SEC, 0);
-    window.DEBUG_EXPORT = { introSec, outroSec, photoSec, totalSec, log: [] };
+    // 通しシーク用タイムライン(コメント停止は除いた通し時間)。各区間の
+    // 開始位置(t0)を計算し、シークバーの位置合わせと途中開始(startAt)に使う
+    let sbAcc = 0;
+    const introT0 = introSec ? (sbAcc += 0, 0) : -1; if (introSec) sbAcc += introSec;
+    const itemT0 = items.map((it, i) => {
+      if (solo && i !== soloIdx) return { nT0: -1, nd: 0, sT0: -1, sd: 0 }; // このパスでは使わない
+      const nd = it.end - it.start, sd = (it.end - it.start) / speed;
+      const nT0 = sbAcc; sbAcc += nd;
+      const sT0 = sbAcc; sbAcc += sd;
+      return { nT0, nd, sT0, sd };
+    });
+    const photoT0 = photoSec ? sbAcc : -1; if (photoSec) sbAcc += photoSec;
+    const outroT0 = outroSec ? sbAcc : -1; if (outroSec) sbAcc += outroSec;
+    const seekTotal = sbAcc; // コメント停止を除いた通し時間(シークバーの最大値)
+    if (previewOnly) {
+      seekbar.min = 0; seekbar.max = seekTotal; seekbar.step = 0.01;
+      previewSeekTotal = seekTotal;
+      // スクラブで通し位置→(スイング番号, 映像時刻)を求めるための表
+      previewTL = { introSec, photoT0, photoSec, outroT0, outroSec, speed,
+        vids: items.map((it, i) => ({ idx: i, start: it.start, end: it.end, ...itemT0[i] })) };
+    }
+    window.DEBUG_EXPORT = { introSec, outroSec, photoSec, totalSec, seekTotal, log: [] };
     const dbg = m => window.DEBUG_EXPORT.log.push([(performance.now() / 1000).toFixed(1), m]);
     dbg('開始');
     let doneSec = 0;
@@ -1939,7 +2224,8 @@ async function runExport(previewOnly) {
     exportSrcNode.connect(videoGain);
     videoGain.connect(audioOut); // 書き出し時は録音のみ、プレビュー時はスピーカーへ
 
-    if (introSec) {
+    if (introSec && startAt < introSec) {
+      const introOff = Math.max(0, startAt); // 途中から始める場合の秒数
       // タイトル画面: 画像を黒背景に収まるよう配置し、テキストを中央に重ねる
       setStatus('<span class="spinner"></span>タイトル画面を' + runLabel + '中…');
       let img = null;
@@ -1993,7 +2279,9 @@ async function runExport(previewOnly) {
             recorder.start(300); // 300msごとにデータを受け取る
             setTimeout(startClock, 2500); // データが来ない環境向けの保険
           }
-          const el = Math.max(0, (performance.now() - t0) / 1000);
+          if (previewAllPaused) { nextFrame(draw); return; } // 一時停止中は進めない
+          const el = Math.max(0, (vpNow() - t0) / 1000) + introOff;
+          if (previewOnly) seekbar.value = Math.min(el, introSec); // 通しシークの位置
           const e = 1 - Math.pow(1 - Math.min(1, el / 0.8), 3); // 画像は0.8秒かけて現れる
           const elT = Math.max(0, el - 1.0); // 文字は画像より1秒遅れて出す
           ctx.fillStyle = '#000';
@@ -2055,6 +2343,9 @@ async function runExport(previewOnly) {
 
     for (let idx = 0; idx < items.length; idx++) {
       if (previewAllStopRequested) break;
+      // 通し位置(startAt)より前で終わるスイングは丸ごと飛ばす
+      if (startAt >= itemT0[idx].sT0 + itemT0[idx].sd) continue;
+      previewCurIdx = idx; // 今どのスイングをプレビュー中か(一時停止時の編集用)
       const it = items[idx];
       const ev = exportVideo;
       // 読み込み失敗時は少し待って再試行(最大3回)
@@ -2084,9 +2375,12 @@ async function runExport(previewOnly) {
       const mapLine = ([x1, y1, x2, y2]) =>
         [(x1 - cx) * s + ox, (y1 - cy) * s + oy, (x2 - cx) * s + ox, (y2 - cy) * s + oy];
 
-      const playPass = (rate, lines, label, freezes) => new Promise((resolve, reject) => {
+      const playPass = (rate, lines, label, freezes, sbT0, startOffset) => new Promise((resolve, reject) => {
         const segDur = it.end - it.start;
-        const pend = freezes ? freezes.slice() : []; // これから止まる場面(昇順)
+        sbT0 = sbT0 || 0;
+        const startV = it.start + Math.max(0, startOffset || 0) * rate; // 途中開始の映像位置
+        // 途中開始のときは、その位置より前のコメント停止は飛ばす
+        const pend = (freezes ? freezes.slice() : []).filter(c => c.t > startV + 0.01);
         let freezeCmt = null, freezeUntil = 0;
         const mapPt = ([x, y]) => [(x - cx) * s + ox, (y - cy) * s + oy];
         const drawFrame = () => {
@@ -2105,19 +2399,27 @@ async function runExport(previewOnly) {
         };
         // スロー再生は無音(BGMのみ)。通常速度は設定に従う
         videoGain.gain.value = (rate === 1 && $('videoSoundOn').checked) ? 1 : 0;
-        seekTo(ev, it.start).then(() => {
+        if (previewOnly) {
+          previewDrawCurrent = drawFrame; // スクラブ描画用
+          previewPassT0 = sbT0; previewPassEnd = sbT0 + segDur / rate;
+          previewPassRate = rate; previewPassVStart = it.start;
+        }
+        seekTo(ev, startV).then(() => {
           ev.playbackRate = rate;
           let started = false;
           const draw = () => {
+            if (previewAllPaused) { nextFrame(draw); return; } // 一時停止中は進めない
             if (freezeCmt) {
               // コメント付きの停止映像(映像は止めたまま同じ画面を描き続ける)
               drawFrame();
-              drawCommentBox(ctx, it, freezeCmt.text, tw, th, mapPt);
+              const cel = COMMENT_SEC - (freezeUntil - vpNow()) / 1000;
+              drawCommentBox(ctx, it, freezeCmt, tw, th, mapPt, cel / 0.45);
               pushFrame();
               setStatus(`<span class="spinner"></span>${runLabel}中 (${idx + 1}/${items.length}本目・コメント表示)…`);
-              if (performance.now() >= freezeUntil || previewAllStopRequested) {
+              if (vpNow() >= freezeUntil || previewAllStopRequested) {
                 freezeCmt = null;
                 doneSec += COMMENT_SEC;
+                previewVideoActive = true;
                 ev.play().then(() => nextFrame(draw)).catch(reject);
                 return;
               }
@@ -2125,6 +2427,7 @@ async function runExport(previewOnly) {
               return;
             }
             if (ev.currentTime >= it.end || ev.ended || previewAllStopRequested) {
+              previewVideoActive = false;
               ev.pause();
               // 注意: ここで録画を一時停止してはいけない。iPhoneのSafariは
               // 一時停止すると動画の長さ情報を最初の区間分しか書き込まず、
@@ -2141,33 +2444,49 @@ async function runExport(previewOnly) {
             pushFrame();
             if (pend.length && ev.currentTime >= pend[0].t) {
               freezeCmt = pend.shift();
-              freezeUntil = performance.now() + COMMENT_SEC * 1000;
+              freezeUntil = vpNow() + COMMENT_SEC * 1000;
+              previewVideoActive = false;
               ev.pause();
               nextFrame(draw);
               return;
             }
             const prog = (doneSec + Math.max(0, ev.currentTime - it.start) / rate) / totalSec;
             $('pfill').style.width = Math.min(100, prog * 100).toFixed(1) + '%';
+            // 全体プレビューではシークバーを通し位置に合わせる(手動移動中は除く)
+            if (previewOnly && !previewScrubbing) {
+              const comp = sbT0 + Math.max(0, ev.currentTime - it.start) / rate;
+              seekbar.value = comp;
+              $('curTime').textContent = fmt(comp);
+            }
             setStatus(`<span class="spinner"></span>${runLabel}中 (${idx + 1}/${items.length}本目・${label})…` + (previewOnly ? '' : ' 画面を閉じないでください'));
             nextFrame(draw);
           };
-          ev.play().then(() => nextFrame(draw)).catch(reject);
+          ev.play().then(() => { previewVideoActive = true; nextFrame(draw); }).catch(reject);
         });
       });
 
       const cmts = (it.comments || [])
+        .map((c, i) => ({ ...c, idx: i })) // 何番目のコメントか(ランダム見た目の種)
         .filter(c => c.t >= it.start && c.t <= it.end)
         .sort((a, b) => a.t - b.t);
-      await playPass(1, null, '通常速度');
+      await Promise.all(cmts.map(ensureCommentImg)); // 左の画像を先にデコード
+      const tt = itemT0[idx];
+      // 通常速度パス(startAtが後ろにある場合は飛ばす/途中から)
+      if (startAt < tt.nT0 + tt.nd) {
+        await playPass(1, null, '通常速度', null, tt.nT0, Math.max(0, startAt - tt.nT0));
+      }
       if (idx === items.length - 1 && !outroSec && !photoSec) {
-        // 診断画面も写真も無い場合は、最後のスロー再生の終わりに向けてフェード
         scheduleBgmFade((it.end - it.start) / speed + cmts.length * COMMENT_SEC - 5);
       }
-      await playPass(speed, it.lines, 'スロー', cmts);
+      // スローパス
+      if (!previewAllStopRequested && startAt < tt.sT0 + tt.sd) {
+        await playPass(speed, it.lines, 'スロー', cmts, tt.sT0, Math.max(0, startAt - tt.sT0));
+      }
     }
 
     dbg('動画ループ終了 stop=' + previewAllStopRequested);
-    if (photoSec && !previewAllStopRequested) {
+    if (photoSec && !previewAllStopRequested && startAt < photoT0 + photoSec) {
+      const photoOff = Math.max(0, startAt - photoT0);
       dbg('写真開始');
       // 動画とラウンド診断の間に写真を挟む(画面いっぱい・4秒)
       setStatus('<span class="spinner"></span>写真ページを' + runLabel + '中…');
@@ -2189,10 +2508,12 @@ async function runExport(previewOnly) {
         mimg = pc;
       }
       if (mimg) {
-        const t0p = performance.now();
+        const t0p = vpNow();
         await new Promise(resolve => {
           const draw = () => {
-            const el = (performance.now() - t0p) / 1000;
+            if (previewAllPaused) { nextFrame(draw); return; } // 一時停止中は進めない
+            const el = (vpNow() - t0p) / 1000 + photoOff;
+            if (previewOnly) seekbar.value = photoT0 + Math.min(el, photoSec);
             ctx.fillStyle = '#000';
             ctx.fillRect(0, 0, tw, th);
             ctx.save();
@@ -2212,17 +2533,20 @@ async function runExport(previewOnly) {
     }
 
     dbg('写真終了');
-    if (outroSec && !previewAllStopRequested) {
+    if (outroSec && !previewAllStopRequested && startAt < outroT0 + outroSec) {
+      const outroOff = Math.max(0, startAt - outroT0);
       dbg('診断開始');
       // 最後に「ラウンド診断」画面(5つ星評価+総評コメント)を付ける。
       // 星は左から順にパッパッと点いていく
       setStatus('<span class="spinner"></span>診断結果の画面を' + runLabel + '中…');
       scheduleBgmFade(outroSec - 5); // 診断画面の最後5秒でBGMをフェードアウト
       const comment = $('outroComment').value.replace(/\s+$/, '');
-      const t0o = performance.now();
+      const t0o = vpNow();
       await new Promise(resolve => {
         const draw = () => {
-          const el = (performance.now() - t0o) / 1000;
+          if (previewAllPaused) { nextFrame(draw); return; } // 一時停止中は進めない
+          const el = (vpNow() - t0o) / 1000 + outroOff;
+          if (previewOnly) seekbar.value = outroT0 + Math.min(el, outroSec);
           const g = ctx.createLinearGradient(0, 0, 0, th);
           g.addColorStop(0, '#143a23');
           g.addColorStop(1, '#06140c');
@@ -2323,9 +2647,10 @@ async function runExport(previewOnly) {
     await stopped;
     if (previewOnly) {
       $('pfill').style.width = '100%';
+      const pv = solo ? 'このスイングのプレビュー' : '全体プレビュー';
       setStatus(previewAllStopRequested
-        ? '⏹ 全体プレビューを停止しました'
-        : '✅ 全体プレビューを最後まで再生しました。この内容で「動画を作成する」を押せば同じ動画ができます', 'ok');
+        ? '⏹ ' + pv + 'を停止しました'
+        : '✅ ' + pv + 'を再生しました' + (solo ? '' : 'この内容で「動画を作成する」を押せば同じ動画ができます'), 'ok');
       return;
     }
     const ext = mime.startsWith('video/mp4') ? 'mp4' : 'webm';
@@ -2375,11 +2700,27 @@ async function runExport(previewOnly) {
     clearTimeout(bgmStartTimer);
     try { if (bgmSrc) { bgmSrc.stop(); bgmSrc.disconnect(); } } catch (e) {}
     if (previewCanvas && previewCanvas.parentNode) previewCanvas.remove();
+    previewCanvas = null;
+    try { if (previewAllPaused) await ac.resume(); } catch (e) {}
+    previewAllPaused = false;
+    previewVideoActive = false;
+    previewScrubbing = false;
+    clearTimeout(scrubDrawTimer); scrubDrawTimer = 0;
+    previewDrawCurrent = null;
+    // シークバーを通常の編集用(0〜動画の長さ)に戻す
+    seekbar.min = 0; seekbar.step = 0.01;
+    if (video.duration) { seekbar.max = video.duration; seekbar.value = video.currentTime || 0; }
     $('export').disabled = false;
     $('previewAll').disabled = false;
     $('previewAll').textContent = '🎬 全体プレビュー';
+    $('previewAllPause').classList.add('hidden');
     $('pbar').classList.add('hidden');
     try { wakeLock?.release(); } catch (e) {}
+    // シークバーで別の区間へ飛んだ場合は、その位置から全体プレビューを再開
+    if (previewOnly && pendingRestartAt >= 0) {
+      const at = pendingRestartAt; pendingRestartAt = -1;
+      setTimeout(() => runExport(true, at), 60);
+    }
   }
 }
 
@@ -2397,6 +2738,8 @@ video.addEventListener('pause', () => { $('cornerPlay').textContent = '▶'; $('
 const seekbar = $('seekbar');
 let scrubbing = false;
 function syncSeekbar() {
+  // 全体プレビュー中はシークバーをプレビュー側が使うので触らない
+  if (exporting && exportPreviewOnly) return;
   if (video.duration) seekbar.max = video.duration;
   if (!scrubbing) seekbar.value = video.currentTime || 0;
   $('curTime').textContent = fmt(video.currentTime || 0);
@@ -2420,6 +2763,30 @@ function execScrubSeek() {
 }
 video.addEventListener('seeked', execScrubSeek);
 seekbar.addEventListener('input', () => {
+  // 全体プレビュー中の動画パスでは、今のスイング動画をスクラブして
+  // 合成画面(previewCanvas)に反映する
+  if (exporting && exportPreviewOnly) {
+    // 全体プレビュー中: シークバーは動画全体の通し位置(0〜通し時間)を表す
+    previewScrubbing = true;
+    if (previewCanvas) previewCanvas.style.display = '';
+    if (!previewAllPaused) {
+      previewAllPaused = true; // 再生を止めてスクラブに専念
+      vpRealPauseStart = performance.now();
+      try { exportVideo.pause(); } catch (e) {}
+      try { getAudioCtx().suspend(); } catch (e) {}
+    }
+    const T = parseFloat(seekbar.value);
+    $('curTime').textContent = fmt(T);
+    // その通し位置が今読み込んでいるスイングの映像なら、その場面を表示する
+    // (通常⇄スローをまたいでも、診断中でも、映像が動くようにする)
+    const m = compositeToVideo(T);
+    if (m && m.idx === previewCurIdx && previewDrawCurrent) {
+      startScrubDraw();
+      previewScrubTarget = m.videoTime;
+      if (!previewScrubBusy) execPreviewScrub();
+    }
+    return;
+  }
   scrubbing = true;
   stopPreview();
   video.pause();
@@ -2428,6 +2795,29 @@ seekbar.addEventListener('input', () => {
   $('curTime').textContent = fmt(parseFloat(seekbar.value));
 });
 seekbar.addEventListener('change', () => {
+  // 全体プレビュー中: 指を離したらその位置から続きを再生する
+  if (exporting && exportPreviewOnly && previewScrubbing) {
+    previewScrubbing = false;
+    clearTimeout(scrubDrawTimer); scrubDrawTimer = 0;
+    const T = parseFloat(seekbar.value);
+    if (previewVideoActive && T >= previewPassT0 && T < previewPassEnd) {
+      // 今再生中の映像パスの範囲内なら、その場で続きから再生(作り直さない)
+      previewAllPaused = false;
+      vpAccum += performance.now() - vpRealPauseStart;
+      try { getAudioCtx().resume(); } catch (e) {}
+      try { exportVideo.currentTime = previewPassVStart + (T - previewPassT0) * previewPassRate; } catch (e) {}
+      try { exportVideo.play(); } catch (e) {}
+    } else {
+      // タイトル/写真/診断や別スイングへ飛ぶ場合は、その位置から作り直す。
+      // 一時停止を解除しないとループが止まったままで作り直しに進めない
+      pendingRestartAt = Math.max(0, Math.min(previewSeekTotal - 0.05, T));
+      previewAllPaused = false;
+      vpAccum += performance.now() - vpRealPauseStart;
+      try { getAudioCtx().resume(); } catch (e) {}
+      previewAllStopRequested = true;
+    }
+    return;
+  }
   scrubbing = false;
   // 指を離したら正確な位置に合わせる
   scrubTarget = parseFloat(seekbar.value);

@@ -148,7 +148,7 @@
 </head>
 <body>
 <div class="app">
-  <h1>⛳ スイング動画編集ツール <span style="font-size:12px;color:#93a0b5">v62</span></h1>
+  <h1>⛳ スイング動画編集ツール <span style="font-size:12px;color:#93a0b5">v72</span></h1>
   <div class="sub">ゴルフスイングを自動検出し、「通常速度 → スロー再生(ガイド線付き)」の動画を作成します。複数の動画は1本に連結されます。動画はどこにも送信されず、すべてこの端末の中で処理されます。</div>
 
   <label class="drop" id="drop">
@@ -204,9 +204,23 @@
         <button id="addComment">💬 コメント追加</button>
         <button id="preview">🔁 このスイングのプレビュー</button>
         <button id="previewAll">🎬 全体プレビュー</button>
+        <button id="previewAllPause" class="hidden accent">⏸ 一時停止</button>
         <span class="hint">「線を今すぐ表示」で線を確認、「線を動かす」でドラッグ調整、「線を追加」で好きな場所に自分の線を引けます。「コメント追加」は、シークバーで場面に移動してから押すと、その場面がスロー再生で4秒止まりコメントが表示されます。プレビューは「このスイング」=今の動画だけ、「全体」=タイトル・写真・ラウンド診断込みの完成形(もう一度押すと停止)</span>
       </div>
       <div id="commentList"></div>
+      <div class="row">
+        <span class="label">テロップ</span>
+        <label style="display:flex;align-items:center;gap:6px;cursor:pointer">
+          <input type="checkbox" id="telopOutline" style="width:16px;height:16px">
+          <span class="hint">文字に縁取り</span>
+          <input type="color" id="telopOutlineColor" value="#000000"
+                 style="width:46px;height:36px;border:none;border-radius:8px;background:#33405c;padding:4px;cursor:pointer">
+        </label>
+        <label style="display:flex;align-items:center;gap:6px;cursor:pointer">
+          <input type="checkbox" id="telopRandom" style="width:16px;height:16px">
+          <span class="hint">🎲 大きさ・位置・色・動きをランダムに変える(バラエティ番組風)</span>
+        </label>
+      </div>
       <div class="row">
         <span class="label">スイング開始</span>
         <span class="time" id="startTime">--:--.--</span>
@@ -376,6 +390,12 @@
   <div class="box">
     <div style="margin-bottom:10px;color:#ffd76e">💬 この場面へのコメント <span class="hint" id="commentDlgTime"></span></div>
     <textarea id="commentText" rows="3" placeholder="例: ここで左足に体重が乗っているのでGOOD!"></textarea>
+    <div style="display:flex;gap:10px;align-items:center;margin-top:10px">
+      <button id="commentImgPick" class="small">🖼 左に画像を入れる</button>
+      <img id="commentImgThumb" class="hidden" alt="" style="height:40px;border-radius:6px;background:#000">
+      <button id="commentImgClear" class="small hidden" style="background:#8a3a3a">画像を外す</button>
+      <input type="file" id="commentImgFile" accept="image/*" style="display:none">
+    </div>
     <div style="display:flex;gap:10px;justify-content:flex-end;margin-top:12px">
       <button id="commentCancel">キャンセル</button>
       <button class="primary" id="commentSave" style="font-size:14px;padding:9px 20px">追加する</button>
@@ -383,7 +403,7 @@
   </div>
 </div>
 <script src="lib/mp4box.all.min.js"></script>
-<script src="remux.js?v=62"></script>
-<script type="module" src="app.js?v=62"></script>
+<script src="remux.js?v=72"></script>
+<script type="module" src="app.js?v=72"></script>
 </body>
 </html>
