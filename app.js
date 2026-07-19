@@ -115,6 +115,30 @@ function waitMeta(v) {
     hard = setTimeout(ng, 12000);
   });
 }
+// 一部の動画はメタデータ直後のdurationが実際より短く報告され、その後
+// durationchangeで正しい値に更新される(この動画の後半=スイング本番が
+// 解析から漏れる原因)。末尾へシークして正確な長さを確定させる
+async function trueDuration(v) {
+  let best = (isFinite(v.duration) && v.duration > 0) ? v.duration : 0;
+  await new Promise(res => {
+    let done = false;
+    const finish = () => { if (done) return; done = true; cleanup(); res(); };
+    const onDur = () => { if (isFinite(v.duration) && v.duration > best) best = v.duration; };
+    const onSeeked = () => finish();
+    const cleanup = () => {
+      v.removeEventListener('durationchange', onDur);
+      v.removeEventListener('seeked', onSeeked);
+      clearTimeout(hard);
+    };
+    v.addEventListener('durationchange', onDur);
+    v.addEventListener('seeked', onSeeked);
+    const hard = setTimeout(finish, 2000);
+    try { v.currentTime = 1e7; } catch (e) { finish(); } // 末尾へ(実長さにクランプされる)
+  });
+  best = Math.max(best, isFinite(v.duration) ? v.duration : 0, v.currentTime || 0);
+  if (v.seekable && v.seekable.length) best = Math.max(best, v.seekable.end(v.seekable.length - 1));
+  return best;
+}
 // 使い回すvideo要素に新しい動画を読み込む(前の動画のreadyStateに
 // 惑わされないよう、イベントを張ってからsrcを差し替える)。
 // イベントが発火しない環境向けに状態ポーリングとタイムアウトの保険付き
@@ -405,7 +429,7 @@ async function analyzeItem(it) {
   try {
     const v = hiddenVideo(it.url);
     await waitMeta(v);
-    it.dur = v.duration;
+    it.dur = await trueDuration(v); // メタデータ直後の不正確な長さで後半を切らない
     it.vw = v.videoWidth; it.vh = v.videoHeight;
     // 長い動画はシーク回数を抑える(検出アルゴリズムはfps可変に対応)
     const W = 160, H = 90;
@@ -1909,29 +1933,25 @@ function compositeToVideo(T) {
   return null;
 }
 let previewScrubbing = false;        // 全体プレビュー中にシークバーで手動移動中か
-let previewScrubBusy = false, previewScrubTarget = null;
+let previewScrubTarget = null;       // スクラブで合わせたい映像時刻
+let previewDrawScrub = null;         // スクラブ中に「補助線付き」で描く関数
 let scrubDrawTimer = 0;
-// スクラブ中は、seekedイベント頼みにせず一定間隔で描き続ける(端末により
-// seekedのタイミングが遅い/来ないことがあり、映像が更新されないため)
+// スクラブ中は40ms毎に「最新の狙い位置へシーク→補助線付きで描画」を
+// 繰り返す。seekedイベントに頼らないので端末差で映像が止まらず、
+// 補助線も常に表示されたままになる
 function startScrubDraw() {
   if (scrubDrawTimer) return;
   const loop = () => {
     if (!previewScrubbing) { scrubDrawTimer = 0; return; }
-    if (previewDrawCurrent) { try { previewDrawCurrent(); } catch (e) {} }
+    if (previewScrubTarget != null &&
+        Math.abs((exportVideo.currentTime || 0) - previewScrubTarget) > 0.02) {
+      try { exportVideo.currentTime = previewScrubTarget; } catch (e) {}
+    }
+    const fn = previewDrawScrub || previewDrawCurrent;
+    if (fn) { try { fn(); } catch (e) {} }
     scrubDrawTimer = setTimeout(loop, 40);
   };
   loop();
-}
-function execPreviewScrub() {
-  if (previewScrubTarget == null) { previewScrubBusy = false; return; }
-  const t = previewScrubTarget; previewScrubTarget = null; previewScrubBusy = true;
-  const onSeeked = () => {
-    exportVideo.removeEventListener('seeked', onSeeked);
-    if (previewDrawCurrent) { try { previewDrawCurrent(); } catch (e) {} }
-    execPreviewScrub(); // 溜まった最新位置を続けて処理
-  };
-  exportVideo.addEventListener('seeked', onSeeked);
-  try { exportVideo.currentTime = t; } catch (e) { previewScrubBusy = false; }
 }
 // 一時停止中は時間を止める「仮想クロック」。アニメーションやコメント
 // 停止の残り時間が、再開時に飛ばずに続きから進むようにする
@@ -1975,9 +1995,9 @@ async function runExport(previewOnly, startAt, soloIdx) {
   previewVideoActive = false;
   previewCurIdx = -1;
   previewScrubbing = false;
-  previewScrubBusy = false;
   previewScrubTarget = null;
   previewDrawCurrent = null;
+  previewDrawScrub = null;
   pendingRestartAt = -1;
   vpAccum = 0;
   $('export').disabled = true;
@@ -2400,7 +2420,22 @@ async function runExport(previewOnly, startAt, soloIdx) {
         // スロー再生は無音(BGMのみ)。通常速度は設定に従う
         videoGain.gain.value = (rate === 1 && $('videoSoundOn').checked) ? 1 : 0;
         if (previewOnly) {
-          previewDrawCurrent = drawFrame; // スクラブ描画用
+          previewDrawCurrent = drawFrame; // 通常再生の描画(そのパスのlines)
+          // スクラブ中は常に補助線付きで描く(通常速度パートでも線が消えない)
+          previewDrawScrub = () => {
+            ctx.fillStyle = '#000';
+            ctx.fillRect(0, 0, tw, th);
+            ctx.drawImage(ev, cx, cy, cw, chh, ox, oy, cw * s, chh * s);
+            if (it.lines && it.lines.length) {
+              ctx.strokeStyle = '#ff2d2d';
+              ctx.lineWidth = Math.max(3, th / 220);
+              ctx.lineCap = 'round';
+              for (const ln of it.lines) {
+                const [a, b, c, d] = mapLine(ln);
+                ctx.beginPath(); ctx.moveTo(a, b); ctx.lineTo(c, d); ctx.stroke();
+              }
+            }
+          };
           previewPassT0 = sbT0; previewPassEnd = sbT0 + segDur / rate;
           previewPassRate = rate; previewPassVStart = it.start;
         }
@@ -2701,12 +2736,14 @@ async function runExport(previewOnly, startAt, soloIdx) {
     try { if (bgmSrc) { bgmSrc.stop(); bgmSrc.disconnect(); } } catch (e) {}
     if (previewCanvas && previewCanvas.parentNode) previewCanvas.remove();
     previewCanvas = null;
+    // プレビュー後は線表示状態をリセット(「線を今すぐ表示」が確実に出るように)
+    if (previewOnly) { linesShown = false; clearOverlay(); }
     try { if (previewAllPaused) await ac.resume(); } catch (e) {}
     previewAllPaused = false;
     previewVideoActive = false;
     previewScrubbing = false;
     clearTimeout(scrubDrawTimer); scrubDrawTimer = 0;
-    previewDrawCurrent = null;
+    previewDrawCurrent = null; previewDrawScrub = null; previewScrubTarget = null;
     // シークバーを通常の編集用(0〜動画の長さ)に戻す
     seekbar.min = 0; seekbar.step = 0.01;
     if (video.duration) { seekbar.max = video.duration; seekbar.value = video.currentTime || 0; }
@@ -2778,12 +2815,11 @@ seekbar.addEventListener('input', () => {
     const T = parseFloat(seekbar.value);
     $('curTime').textContent = fmt(T);
     // その通し位置が今読み込んでいるスイングの映像なら、その場面を表示する
-    // (通常⇄スローをまたいでも、診断中でも、映像が動くようにする)
+    // (通常⇄スローをまたいでも、診断中でも、映像が動く。補助線も出したまま)
     const m = compositeToVideo(T);
-    if (m && m.idx === previewCurIdx && previewDrawCurrent) {
-      startScrubDraw();
+    if (m && m.idx === previewCurIdx) {
       previewScrubTarget = m.videoTime;
-      if (!previewScrubBusy) execPreviewScrub();
+      startScrubDraw(); // 40msループが最新位置へシークして補助線付きで描く
     }
     return;
   }
