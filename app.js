@@ -1944,12 +1944,16 @@ function startScrubDraw() {
   const loop = () => {
     if (!previewScrubbing) { scrubDrawTimer = 0; return; }
     if (previewScrubTarget != null &&
-        Math.abs((exportVideo.currentTime || 0) - previewScrubTarget) > 0.02) {
-      try { exportVideo.currentTime = previewScrubTarget; } catch (e) {}
+        Math.abs((exportVideo.currentTime || 0) - previewScrubTarget) > 0.015) {
+      // fastSeekは最寄りのキーフレームへ素早く飛ぶのでスクラブが滑らか
+      try {
+        if (exportVideo.fastSeek) exportVideo.fastSeek(previewScrubTarget);
+        else exportVideo.currentTime = previewScrubTarget;
+      } catch (e) { try { exportVideo.currentTime = previewScrubTarget; } catch (e2) {} }
     }
     const fn = previewDrawScrub || previewDrawCurrent;
     if (fn) { try { fn(); } catch (e) {} }
-    scrubDrawTimer = setTimeout(loop, 40);
+    scrubDrawTimer = setTimeout(loop, 30);
   };
   loop();
 }
@@ -2299,7 +2303,7 @@ async function runExport(previewOnly, startAt, soloIdx) {
             recorder.start(300); // 300msごとにデータを受け取る
             setTimeout(startClock, 2500); // データが来ない環境向けの保険
           }
-          if (previewAllPaused) { nextFrame(draw); return; } // 一時停止中は進めない
+          if (previewAllPaused && !previewAllStopRequested) { nextFrame(draw); return; } // 一時停止中は進めない(停止要求時は抜ける)
           const el = Math.max(0, (vpNow() - t0) / 1000) + introOff;
           if (previewOnly) seekbar.value = Math.min(el, introSec); // 通しシークの位置
           const e = 1 - Math.pow(1 - Math.min(1, el / 0.8), 3); // 画像は0.8秒かけて現れる
@@ -2443,7 +2447,7 @@ async function runExport(previewOnly, startAt, soloIdx) {
           ev.playbackRate = rate;
           let started = false;
           const draw = () => {
-            if (previewAllPaused) { nextFrame(draw); return; } // 一時停止中は進めない
+            if (previewAllPaused && !previewAllStopRequested) { nextFrame(draw); return; } // 一時停止中は進めない(停止要求時は抜ける)
             if (freezeCmt) {
               // コメント付きの停止映像(映像は止めたまま同じ画面を描き続ける)
               drawFrame();
@@ -2546,7 +2550,7 @@ async function runExport(previewOnly, startAt, soloIdx) {
         const t0p = vpNow();
         await new Promise(resolve => {
           const draw = () => {
-            if (previewAllPaused) { nextFrame(draw); return; } // 一時停止中は進めない
+            if (previewAllPaused && !previewAllStopRequested) { nextFrame(draw); return; } // 一時停止中は進めない(停止要求時は抜ける)
             const el = (vpNow() - t0p) / 1000 + photoOff;
             if (previewOnly) seekbar.value = photoT0 + Math.min(el, photoSec);
             ctx.fillStyle = '#000';
@@ -2579,7 +2583,7 @@ async function runExport(previewOnly, startAt, soloIdx) {
       const t0o = vpNow();
       await new Promise(resolve => {
         const draw = () => {
-          if (previewAllPaused) { nextFrame(draw); return; } // 一時停止中は進めない
+          if (previewAllPaused && !previewAllStopRequested) { nextFrame(draw); return; } // 一時停止中は進めない(停止要求時は抜ける)
           const el = (vpNow() - t0o) / 1000 + outroOff;
           if (previewOnly) seekbar.value = outroT0 + Math.min(el, outroSec);
           const g = ctx.createLinearGradient(0, 0, 0, th);
