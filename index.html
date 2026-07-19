@@ -144,11 +144,54 @@
     .time { font-size: 17px; min-width: 90px; }
     .qrow { flex-wrap: wrap; }
   }
+
+  /* ▼ 野山プロ ラウンドレッスン案内バナー(一番上) */
+  .promo {
+    display: flex; align-items: center; gap: 16px;
+    background: linear-gradient(135deg, #24344e, #2b3a52);
+    border: 1px solid #3a4a6a; border-radius: 14px;
+    padding: 14px 18px; margin-bottom: 18px;
+    text-decoration: none; color: #e8ecf3;
+    transition: transform .12s, box-shadow .12s, border-color .12s;
+  }
+  .promo:hover { transform: translateY(-2px); box-shadow: 0 6px 20px rgba(0,0,0,.35); border-color: #6ea8ff; }
+  .promo img { width: 96px; height: 96px; object-fit: contain; border-radius: 10px; background: rgba(255,255,255,.06); flex-shrink: 0; }
+  .promo .ptxt { flex: 1; min-width: 0; }
+  .promo .ptag { display: inline-block; background: #2f7d4f; color: #fff; font-size: 11px; font-weight: bold; padding: 2px 10px; border-radius: 999px; margin-bottom: 6px; }
+  .promo .ptitle { font-size: 17px; font-weight: bold; margin: 2px 0 4px; line-height: 1.35; }
+  .promo .pdesc { font-size: 12.5px; color: #b8c2d4; line-height: 1.5; }
+  .promo .pcta { display: inline-block; margin-top: 8px; color: #ffd76e; font-size: 13px; font-weight: bold; }
+  .promo .pcta::after { content: " ›"; }
+  @media (max-width: 560px) {
+    .promo { gap: 12px; padding: 12px 14px; }
+    .promo img { width: 70px; height: 70px; }
+    .promo .ptitle { font-size: 15px; }
+    .promo .pdesc { font-size: 12px; }
+  }
+
+  /* ▼ ホームページ案内(一番下) */
+  .site-foot {
+    margin-top: 30px; padding: 18px 12px; text-align: center;
+    border-top: 1px solid #2c3550; color: #93a0b5; font-size: 13px; line-height: 1.7;
+  }
+  .site-foot a { color: #6ea8ff; text-decoration: none; font-weight: bold; }
+  .site-foot a:hover { text-decoration: underline; }
+  .site-foot .fname { color: #e8ecf3; }
 </style>
 </head>
 <body>
 <div class="app">
-  <h1>⛳ スイング動画編集ツール <span style="font-size:12px;color:#93a0b5">v76</span></h1>
+  <a class="promo" href="https://noyamagolf.com/?p=47" target="_blank" rel="noopener">
+    <img src="assets/noyama.png?v=1" alt="ティーチングプロ 野山佳治">
+    <div class="ptxt">
+      <span class="ptag">受付中</span>
+      <div class="ptitle">🏌️ 野山佳治プロのラウンドレッスン(千葉)</div>
+      <div class="pdesc">100切り・初心者・コースデビューを目指す方へ。市原/成田エリアで、実際の18ホールを回りながら、スイングはもちろんコースマネージメント、様々な状況への対処法等をレッスンいたします。</div>
+      <span class="pcta">ラウンドレッスンの詳細・お申し込みはこちら</span>
+    </div>
+  </a>
+
+  <h1>⛳ スイング動画編集ツール <span style="font-size:12px;color:#93a0b5">v77</span></h1>
   <div class="sub">ゴルフスイングを自動検出し、「通常速度 → スロー再生(ガイド線付き)」の動画を作成します。複数の動画は1本に連結されます。動画はどこにも送信されず、すべてこの端末の中で処理されます。</div>
 
   <label class="drop" id="drop">
@@ -385,6 +428,13 @@
       <div id="result"></div>
     </div>
   </div>
+
+  <div class="site-foot">
+    ⛳ このツールはティーチングプロ <span class="fname">野山佳治</span> が制作しています。<br>
+    スタジオ・ラウンド・オンラインなど各種ゴルフレッスンは
+    <a href="https://noyamagolf.com/" target="_blank" rel="noopener">野山佳治 公式ホームページ</a>
+    をご覧ください。
+  </div>
 </div>
 <div id="commentDialog" class="hidden">
   <div class="box">
@@ -403,7 +453,7 @@
   </div>
 </div>
 <script src="lib/mp4box.all.min.js"></script>
-<script src="remux.js?v=76"></script>
-<script type="module" src="app.js?v=76"></script>
+<script src="remux.js?v=77"></script>
+<script type="module" src="app.js?v=77"></script>
 </body>
 </html>
