@@ -1914,6 +1914,9 @@ let exportPreviewOnly = false;      // 全体プレビュー(録画なし)とし
 let previewAllStopRequested = false; // 全体プレビューの停止要求
 let previewAllPaused = false;        // 全体プレビューの一時停止中か
 let previewPauseToggle = null;       // プレビュー中の一時停止/再開(左下ボタン等から呼ぶ)
+let previewScrubSwitch = null;       // スクラブで別のスイングへ入った時の読み込み(runExport内で定義)
+let scrubLoadedIdx = -1;             // 今exportVideoに読み込まれているスイング番号
+let scrubSwitchToken = 0;            // 読み込みの競合防止(最後の要求だけ有効)
 let previewVideoActive = false;      // 今、動画パス(exportVideo)を再生中か
 let previewCurIdx = -1;              // 今プレビュー中のスイング(items内の番号)
 let previewDrawCurrent = null;       // 今のexportVideoフレームを合成画面へ描く関数
@@ -1945,6 +1948,7 @@ let scrubSeekedHooked = false;
 // 近くは currentTime で正確に合わせる
 function scrubChase() {
   if (!previewScrubbing || previewScrubTarget == null) return;
+  if (exportVideo.readyState < 1) return; // 読み込み中はシークしない
   if (exportVideo.seeking) return; // 前のシークが終わってから
   const d = Math.abs((exportVideo.currentTime || 0) - previewScrubTarget);
   if (d <= 0.01) return;
@@ -2021,6 +2025,7 @@ async function runExport(previewOnly, startAt, soloIdx) {
   previewScrubTarget = null;
   previewDrawCurrent = null;
   previewDrawScrub = null;
+  scrubLoadedIdx = -1;
   pendingRestartAt = -1;
   vpAccum = 0;
   $('export').disabled = true;
@@ -2110,6 +2115,39 @@ async function runExport(previewOnly, startAt, soloIdx) {
       $('previewAllPause').onclick = togglePause;
       previewPauseToggle = togglePause;
       setPauseLabels();
+      // スクラブで「今読み込んでいるスイング以外」の区間へ入ったら、その
+      // 動画を読み込んで映像を追従させる(以前は指を離すまで映像が止まって
+      // いた)。連続で区間をまたいでも最後の要求だけが有効
+      previewScrubSwitch = async (nidx) => {
+        const token = ++scrubSwitchToken;
+        const it2 = items[nidx];
+        if (!it2) return;
+        scrubLoadedIdx = nidx; // 先に記録(同じ区間への連続イベントは再読込しない)
+        try { exportVideo.pause(); } catch (e) {}
+        try { await loadInto(exportVideo, it2.url); } catch (e) { return; }
+        if (token !== scrubSwitchToken || !exporting || !exportPreviewOnly) return;
+        const rect2 = useZoom ? zoomRect(it2, it2.start, it2.end, tw, th) : null;
+        const cw2 = rect2 ? rect2.cw : it2.vw, ch2 = rect2 ? rect2.ch : it2.vh;
+        const cx2 = rect2 ? rect2.cx : 0, cy2 = rect2 ? rect2.cy : 0;
+        const s2 = Math.min(tw / cw2, th / ch2);
+        const ox2 = (tw - cw2 * s2) / 2, oy2 = (th - ch2 * s2) / 2;
+        previewDrawScrub = () => {
+          ctx.fillStyle = '#000';
+          ctx.fillRect(0, 0, tw, th);
+          ctx.drawImage(exportVideo, cx2, cy2, cw2, ch2, ox2, oy2, cw2 * s2, ch2 * s2);
+          if (it2.lines && it2.lines.length) {
+            ctx.strokeStyle = '#ff2d2d';
+            ctx.lineWidth = Math.max(3, th / 220);
+            ctx.lineCap = 'round';
+            for (const ln of it2.lines) {
+              const a = (ln[0] - cx2) * s2 + ox2, b = (ln[1] - cy2) * s2 + oy2;
+              const c = (ln[2] - cx2) * s2 + ox2, d = (ln[3] - cy2) * s2 + oy2;
+              ctx.beginPath(); ctx.moveTo(a, b); ctx.lineTo(c, d); ctx.stroke();
+            }
+          }
+        };
+        startScrubDraw();
+      };
     }
     const stream = previewOnly ? null : cvs.captureStream(30);
     const recDest = previewOnly ? null : ac.createMediaStreamDestination();
@@ -2418,6 +2456,7 @@ async function runExport(previewOnly, startAt, soloIdx) {
         throw new Error('「' + it.file.name + '」を読み込めませんでした。' +
           '端末のメモリ不足の可能性があります。ページを再読み込みして、動画の本数を減らしてお試しください');
       }
+      scrubLoadedIdx = idx; // スクラブの追従先(このスイングが読み込み済み)
       try { ev.preservesPitch = true; } catch (e) {}
       const rect = useZoom ? zoomRect(it, it.start, it.end, tw, th) : null;
       const cw = rect ? rect.cw : it.vw, chh = rect ? rect.ch : it.vh;
@@ -2785,6 +2824,8 @@ async function runExport(previewOnly, startAt, soloIdx) {
     $('previewAllPause').classList.add('hidden');
     $('cornerPause').classList.add('hidden');
     previewPauseToggle = null;
+    previewScrubSwitch = null;
+    scrubSwitchToken++; // 読み込み途中のスクラブ切替を無効化
     // シークバー左の▶を通常の編集動画用の表示に戻す
     $('playBtn').textContent = video.paused ? '▶' : '⏸';
     $('pbar').classList.add('hidden');
@@ -2858,12 +2899,17 @@ seekbar.addEventListener('input', () => {
     }
     const T = parseFloat(seekbar.value);
     $('curTime').textContent = fmt(T);
-    // その通し位置が今読み込んでいるスイングの映像なら、その場面を表示する
-    // (通常⇄スローをまたいでも、診断中でも、映像が動く。補助線も出したまま)
+    // どのスイングの区間でも映像を追従させる(通常⇄スロー・別スイング・
+    // 診断中でも動く。補助線も出したまま)。別のスイングの区間へ入ったら
+    // その動画を読み込んでから追従する
     const m = compositeToVideo(T);
-    if (m && m.idx === previewCurIdx) {
+    if (m) {
       previewScrubTarget = m.videoTime;
-      startScrubDraw(); // 40msループが最新位置へシークして補助線付きで描く
+      if (m.idx === scrubLoadedIdx) {
+        startScrubDraw(); // シーク完了ごとに最新位置へ追いかけて描く
+      } else if (previewScrubSwitch) {
+        previewScrubSwitch(m.idx); // 別のスイング: 読み込み後に追従開始
+      }
     }
     return;
   }
@@ -2880,8 +2926,10 @@ seekbar.addEventListener('change', () => {
     previewScrubbing = false;
     clearTimeout(scrubDrawTimer); scrubDrawTimer = 0;
     const T = parseFloat(seekbar.value);
-    if (previewVideoActive && T >= previewPassT0 && T < previewPassEnd) {
-      // 今再生中の映像パスの範囲内なら、その場で続きから再生(作り直さない)
+    if (previewVideoActive && T >= previewPassT0 && T < previewPassEnd &&
+        scrubLoadedIdx === previewCurIdx) {
+      // 今再生中の映像パスの範囲内で、動画も入れ替わっていなければ、
+      // その場で続きから再生(作り直さない)
       previewAllPaused = false;
       vpAccum += performance.now() - vpRealPauseStart;
       try { getAudioCtx().resume(); } catch (e) {}
